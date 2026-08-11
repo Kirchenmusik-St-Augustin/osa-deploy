@@ -1,0 +1,16 @@
+[Unit]
+Wants=osa-backend.service
+Before=osa-backend.service
+
+[Pod]
+PodName=osa-backend-pod
+PublishPort=127.0.0.1:21000:8000
+# IPv4-only: pasta's default dual-stack IPv6 passthrough is fragile in this
+# host's network setup and can silently black-hole outbound IPv6
+# connections (e.g. to Google's cert endpoint during Google Login) without
+# ever erroring or timing out on its own -- same reasoning as vb-api's own
+# pod in the sister project. Nothing in this stack needs outbound IPv6.
+Network=pasta:-4
+
+[Install]
+WantedBy=default.target

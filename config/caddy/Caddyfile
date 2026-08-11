@@ -1,0 +1,56 @@
+{
+	email einteilung@hochamt.at
+	# Disables HTTP/3 (QUIC), TCP-only -- carried over from osa-infrastructure's
+	# previous prod Caddyfile unchanged, unrelated to this cutover.
+	servers {
+		protocols h1 h2
+	}
+}
+
+einteilung.hochamt.at {
+	log
+	basic_auth /logging* {
+		{$LOGGING_USER} {$LOGGING_PASSWORD_HASH}
+	}
+	handle /logging/dozzle* {
+		reverse_proxy 127.0.0.1:8081
+	}
+	# Legacy-compat redirect: hochamt.at/go/{path} existed before the
+	# dedicated go.-subdomain below and redirected there too -- same
+	# pattern already proven in dev (einteilung.hochamt.at.dev.schimpl.cc).
+	handle_path /go/* {
+		redir https://go.hochamt.at{uri} 302
+	}
+	# Backend: prefix stripped, backend runs with root_path="/api".
+	handle_path /api {
+		reverse_proxy 127.0.0.1:21000 {
+			header_down -Server
+		}
+	}
+	handle_path /api/* {
+		reverse_proxy 127.0.0.1:21000 {
+			header_down -Server
+		}
+	}
+	# Frontend: catch-all fallback.
+	handle {
+		reverse_proxy 127.0.0.1:21001 {
+			header_down -Server
+		}
+	}
+}
+
+# Kurz-URL-Redirect-Dienst der Shorturl-Domäne, eigene Subdomain wie im
+# Laravel-Original. `rewrite` prependet "/go" vor jeden Request, bevor er
+# an denselben Backend-Port wie oben geht -- Gegenrichtung zum
+# "/api"-Strip-Muster: der öffentliche go-Router ist im Backend unter
+# genau diesem Präfix eingehängt (main.py), über die Haupt-Domain oben
+# aber nicht erreichbar (dort routet nur /api/* zum Backend). Öffentlich,
+# unauthentifiziert -- reiner Redirect-Dienst.
+go.hochamt.at {
+	log
+	rewrite * /go{uri}
+	reverse_proxy 127.0.0.1:21000 {
+		header_down -Server
+	}
+}

@@ -1,0 +1,23 @@
+[Unit]
+Description=OSA Frontend (Prod)
+
+[Container]
+ContainerName=osa-frontend
+Pod=osa-frontend.pod
+Image=ghcr.io/kirchenmusik-st-augustin/osa-frontend:latest
+AutoUpdate=registry
+# Must set API_BASE_URL and APP_ENVIRONMENT (GOOGLE_CLIENT_ID optional) --
+# the image's docker-entrypoint.d/40-generate-runtime-config.sh refuses to
+# start nginx otherwise (see osa-frontend/docker/docker-entrypoint.d/).
+EnvironmentFile=%h/.env/osa-frontend.env
+
+HealthCmd=wget -qO- http://127.0.0.1/ || exit 1
+HealthInterval=30s
+HealthTimeout=5s
+HealthRetries=3
+HealthStartPeriod=10s
+
+[Service]
+Restart=always
+RestartSec=5
+TimeoutStartSec=60

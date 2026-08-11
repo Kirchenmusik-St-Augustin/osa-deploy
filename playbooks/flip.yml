@@ -1,0 +1,93 @@
+---
+# DER Hin-/Ruecksteig-Mechanismus: EIN Playbook fuer beide Richtungen
+# zwischen Legacy und dem neuen Stack. Solange Phase 1 gilt (beide Stacks
+# teilen dieselbe SQLite-Datei, vor der Postgres-Migration -- CLAUDE.md
+# Abschnitt 3) ist der Wechsel in beide Richtungen technisch identisch und
+# beliebig oft wiederholbar. Diese Reversibilitaet endet strukturell mit
+# Phase 2 -- danach ist target=legacy keine einfache Umkehrung mehr,
+# sondern braeuchte eine echte Rueckmigration (siehe README).
+#
+# Aufruf:
+#   ansible-playbook -i inventory/hosts.ini playbooks/flip.yml -e target=new    --check --diff
+#   ansible-playbook -i inventory/hosts.ini playbooks/flip.yml -e target=new
+#   ansible-playbook -i inventory/hosts.ini playbooks/flip.yml -e target=legacy --check --diff
+#   ansible-playbook -i inventory/hosts.ini playbooks/flip.yml -e target=legacy
+#
+# Kein --ask-vault-pass noetig -- dieses Playbook fasst nie secrets/*.env
+# an (das ist deploy.yml's Aufgabe), nur Pod-Start/-Stopp + Caddyfile.
+
+- name: "Hin-/Ruecksteig: aktiven Stack wechseln"
+  hosts: vps
+  remote_user: service
+  gather_facts: yes
+  vars:
+    local_caddyfile_dir: "../config/caddy"
+    remote_caddy_config_dir: "{{ ansible_user_dir }}/.config/osa/infrastructure/caddy"
+    xdg_runtime_dir: "/run/user/{{ ansible_facts.user_uid }}"
+
+    # target bestimmt, welcher Stack gestoppt/gestartet wird und welche
+    # Caddyfile-Variante einzuspielen ist -- symmetrisch fuer beide
+    # Richtungen, kein separater Rollback-Pfad.
+    target_config:
+      new:
+        stop_service: einteilung.hochamt.at-pod.service
+        start_service: osa-backend-pod.service
+        caddyfile_src: Caddyfile
+      legacy:
+        stop_service: osa-backend-pod.service
+        start_service: einteilung.hochamt.at-pod.service
+        caddyfile_src: Caddyfile.legacy
+
+  pre_tasks:
+    - name: "target validieren (muss 'new' oder 'legacy' sein)"
+      ansible.builtin.assert:
+        that:
+          - target is defined
+          - target in ['new', 'legacy']
+        fail_msg: >-
+          Aufruf mit -e target=new oder -e target=legacy noetig, z.B.:
+          ansible-playbook playbooks/flip.yml -e target=new
+
+  tasks:
+    # ------------------------------------------------------------------
+    # 1. Anderen Stack ZUERST stoppen -- erst danach darf der Zielstack
+    # starten. Erzwingt strukturell (nicht nur der Doku nach), dass
+    # Legacys schreibfaehige Container und osa-backend nie gleichzeitig
+    # gegen die geteilte SQLite-Datei laufen (siehe osa-backend.container's
+    # eigener Kommentar zu genau dieser Regel).
+    # ------------------------------------------------------------------
+    - name: "Anderen Stack stoppen: {{ target_config[target].stop_service }}"
+      ansible.builtin.systemd:
+        scope: user
+        name: "{{ target_config[target].stop_service }}"
+        state: stopped
+      environment:
+        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+
+    - name: "Zielstack starten: {{ target_config[target].start_service }}"
+      ansible.builtin.systemd:
+        scope: user
+        name: "{{ target_config[target].start_service }}"
+        enabled: yes
+        state: started
+      environment:
+        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+
+    # ------------------------------------------------------------------
+    # 2. Caddyfile-Variante zum Ziel einspielen + Caddy neu starten --
+    # DER eigentliche Traffic-Switch.
+    # ------------------------------------------------------------------
+    - name: "Caddyfile ({{ target_config[target].caddyfile_src }}) einspielen"
+      ansible.builtin.copy:
+        src: "{{ local_caddyfile_dir }}/{{ target_config[target].caddyfile_src }}"
+        dest: "{{ remote_caddy_config_dir }}/Caddyfile"
+        mode: "0644"
+
+    - name: caddy.service neu starten -- DER TRAFFIC-FLIP
+      ansible.builtin.systemd:
+        scope: user
+        name: caddy.service
+        enabled: yes
+        state: restarted
+      environment:
+        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"

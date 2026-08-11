@@ -1,0 +1,35 @@
+[Unit]
+Description=Dozzle Log Viewer
+After=podman.socket
+Requires=podman.socket
+
+[Container]
+ContainerName=logging-dozzle
+Image=docker.io/amir20/dozzle:latest
+
+Volume=%t/podman/podman.sock:/var/run/docker.sock:ro,z
+
+PublishPort=127.0.0.1:8081:8080
+Environment=DOZZLE_BASE=/logging/dozzle
+Environment=TZ=Europe/Vienna
+
+ReadOnly=true
+NoNewPrivileges=true
+
+DropCapability=all
+
+Mount=type=tmpfs,target=/tmp
+
+# --- HealthCheck Konfiguration ---
+Notify=healthy
+HealthCmd=CMD /dozzle healthcheck
+HealthInterval=10s
+HealthRetries=3
+HealthTimeout=2s
+HealthStartPeriod=5s
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

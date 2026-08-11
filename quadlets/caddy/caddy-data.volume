@@ -1,0 +1,5 @@
+[Unit]
+Description=Persistente Zertifikate und Daten für Caddy (Einteilung)
+
+[Volume]
+VolumeName=caddy-data-prod

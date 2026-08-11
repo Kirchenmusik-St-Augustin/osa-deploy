@@ -1,0 +1,176 @@
+---
+# Tag-2-Betrieb: Secrets, Quadlet-DEFINITIONEN und Timer auf dem
+# Produktions-Host synchron halten. Ruehrt NIE an, welcher Stack (Legacy
+# oder der neue) gerade aktiv ist, und startet/restartet Caddy NIE --
+# beides ist ausschliesslich playbooks/flip.yml's Aufgabe (siehe dort und
+# die README, Abschnitt "Hin-/Rueckstieg"). Baut KEINE Images, klont KEINE
+# App-Repos -- die Images kommen bereits fertig gebaut aus ghcr.io und
+# werden vom bereits aktiven podman-auto-update.timer automatisch
+# eingespielt.
+#
+# Aufruf: ansible-playbook -i inventory/hosts.ini playbooks/deploy.yml --ask-vault-pass --check --diff
+#         ansible-playbook -i inventory/hosts.ini playbooks/deploy.yml --ask-vault-pass
+#
+# Sofort-Deploy statt auf den naechtlichen Auto-Update-Lauf zu warten --
+# NUR sinnvoll, wenn der jeweilige Stack laut dem letzten flip.yml-Lauf
+# gerade der aktive ist (siehe README):
+#   ansible-playbook ... --ask-vault-pass --tags deploy-backend
+#   ansible-playbook ... --ask-vault-pass --tags deploy-frontend
+
+- name: Deploy/Sync auf dem P-System (einteilung.hochamt.at)
+  hosts: vps
+  remote_user: service
+  gather_facts: yes
+  vars:
+    local_secrets_path: "../secrets"
+    local_quadlets_path: "../quadlets"
+    local_timers_path: "../systemd-timers"
+
+    remote_env_dir: "{{ ansible_user_dir }}/.env"
+    remote_quadlet_base: "{{ ansible_user_dir }}/.config/containers/systemd"
+    remote_systemd_user_dir: "{{ ansible_user_dir }}/.config/systemd/user"
+    xdg_runtime_dir: "/run/user/{{ ansible_facts.user_uid }}"
+
+    # Quadlet-Quellordner -> Zielpfad unter remote_quadlet_base. Caddy ist
+    # bewusst mit dabei (Definition wird synct), aber caddy.service wird
+    # von DIESEM Playbook nie gestartet/restartet -- siehe oben.
+    quadlet_targets:
+      - { src: caddy, dest: "osa/infrastructure/caddy" }
+      - { src: maintenance, dest: "osa/infrastructure/maintenance" }
+      - { src: logging, dest: "osa/infrastructure/logging" }
+      - { src: backend, dest: "osa/osa-backend" }
+      - { src: frontend, dest: "osa/osa-frontend" }
+
+    # Units, die IMMER laufen duerfen, unabhaengig davon welcher Stack
+    # gerade laut flip.yml aktiv ist -- Frontend ist zustandslos (kein
+    # DB-Zugriff), Dozzle liest nur read-only den Podman-Socket.
+    # osa-backend-pod.service und einteilung.hochamt.at-pod.service
+    # gehoeren AUSDRUECKLICH NICHT hierher, siehe flip.yml.
+    managed_units_safe:
+      - podman-prune.timer
+      - osa-frontend-pod.service
+      - logging-dozzle.service
+
+  tasks:
+    - name: Verzeichnisstruktur anlegen
+      tags: [always]
+      loop:
+        - "{{ remote_env_dir }}"
+        - "{{ remote_quadlet_base }}"
+        - "{{ remote_systemd_user_dir }}"
+        - "{{ ansible_user_dir }}/data/osa/einteilung.hochamt.at/sqlite"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0700"
+
+    - name: "*.env aus secrets/ finden"
+      tags: [always]
+      delegate_to: localhost
+      become: no
+      ansible.builtin.find:
+        paths: "{{ local_secrets_path }}"
+        patterns: "*.env"
+      register: secret_files
+
+    - name: Secrets nach ~/.env kopieren
+      tags: [always]
+      no_log: true
+      loop: "{{ secret_files.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+      ansible.builtin.copy:
+        src: "{{ item.path }}"
+        dest: "{{ remote_env_dir }}/{{ item.path | basename }}"
+        mode: "0600"
+
+    - name: Quadlet-Verzeichnisse anlegen
+      tags: [always]
+      loop: "{{ quadlet_targets }}"
+      loop_control:
+        label: "{{ item.dest }}"
+      ansible.builtin.file:
+        path: "{{ remote_quadlet_base }}/{{ item.dest }}"
+        state: directory
+        mode: "0755"
+
+    - name: Quadlet-Dateien kopieren
+      tags: [always]
+      loop: "{{ quadlet_targets }}"
+      loop_control:
+        label: "{{ item.dest }}"
+      ansible.builtin.copy:
+        src: "{{ local_quadlets_path }}/{{ item.src }}/"
+        dest: "{{ remote_quadlet_base }}/{{ item.dest }}/"
+        mode: "0644"
+
+    - name: Systemd-Timer kopieren (kein Quadlet, eigener Zielpfad)
+      tags: [always]
+      ansible.builtin.copy:
+        src: "{{ local_timers_path }}/"
+        dest: "{{ remote_systemd_user_dir }}/"
+        mode: "0644"
+
+    - name: systemctl --user daemon-reload
+      tags: [always]
+      ansible.builtin.systemd:
+        scope: user
+        daemon_reload: yes
+      environment:
+        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+
+    - name: Immer-sichere Dienste + Timer aktivieren + starten
+      tags: [always]
+      loop: "{{ managed_units_safe }}"
+      ansible.builtin.systemd:
+        scope: user
+        name: "{{ item }}"
+        enabled: yes
+        state: started
+      environment:
+        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+
+    # ------------------------------------------------------------------
+    # Sofort-Deploy (nur bei explizitem --tags) -- setzt voraus, dass der
+    # jeweilige Stack laut dem letzten flip.yml-Lauf gerade der aktive
+    # ist. Ein --tags deploy-backend WAEHREND target=legacy aktiv ist,
+    # wuerde osa-backend-pod parallel zu Legacy hochziehen -- siehe
+    # README, Abschnitt "Hin-/Rueckstieg", bevor dieser Tag benutzt wird.
+    # ------------------------------------------------------------------
+    - name: "Sofort-Deploy osa-backend: Image pullen"
+      tags: [never, deploy-backend]
+      ansible.builtin.command: podman pull ghcr.io/kirchenmusik-st-augustin/osa-backend:latest
+      environment:
+        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+      changed_when: true
+
+    - name: "Sofort-Deploy osa-backend: Pod neu starten"
+      # NICHT osa-backend.service direkt neu starten: der Container ist
+      # per generiertem BindsTo= an osa-backend-pod.service gebunden --
+      # ein Container-Restart stoppt dabei den ganzen Pod, aber nichts
+      # startet ihn danach von selbst wieder wieder (empirisch verifiziert
+      # im Schwesterprojekt). Der Pod-Service selbst zieht den enthaltenen
+      # Container ueber Wants=/Before= korrekt wieder hoch.
+      tags: [never, deploy-backend]
+      ansible.builtin.systemd:
+        scope: user
+        name: osa-backend-pod.service
+        state: restarted
+      environment:
+        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+
+    - name: "Sofort-Deploy osa-frontend: Image pullen"
+      tags: [never, deploy-frontend]
+      ansible.builtin.command: podman pull ghcr.io/kirchenmusik-st-augustin/osa-frontend:latest
+      environment:
+        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+      changed_when: true
+
+    - name: "Sofort-Deploy osa-frontend: Pod neu starten"
+      tags: [never, deploy-frontend]
+      ansible.builtin.systemd:
+        scope: user
+        name: osa-frontend-pod.service
+        state: restarted
+      environment:
+        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"

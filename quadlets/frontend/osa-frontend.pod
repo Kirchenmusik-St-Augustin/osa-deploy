@@ -1,0 +1,10 @@
+[Unit]
+Wants=osa-frontend.service
+Before=osa-frontend.service
+
+[Pod]
+PodName=osa-frontend-pod
+PublishPort=127.0.0.1:21001:80
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,46 @@
+[Unit]
+Description=Caddy Web Server (einteilung.hochamt.at)
+After=network-online.target
+
+[Container]
+Image=docker.io/library/caddy:2
+AutoUpdate=registry
+ContainerName=caddy
+Network=host
+Notify=healthy
+DNS=8.8.8.8
+DNS=1.1.1.1
+
+EnvironmentFile=%h/.env/caddy.env
+
+# --- SICHERHEITS-HARDENING ---
+ReadOnly=true
+NoNewPrivileges=true
+DropCapability=all
+# CAP_NET_BIND_SERVICE wird für die Ports 80 und 443 benötigt
+AddCapability=CAP_NET_BIND_SERVICE
+
+# Flüchtiger Speicher für Laufzeitdaten (Wichtig für ReadOnly)
+Mount=type=tmpfs,target=/tmp,tmpfs-mode=1777
+Mount=type=tmpfs,target=/run,tmpfs-mode=1777
+
+# --- VOLUMES ---
+Volume=%E/osa/infrastructure/caddy/Caddyfile:/etc/caddy/Caddyfile:ro,z
+
+# Die restlichen Daten wandern in die Named Volumes
+Volume=caddy-data.volume:/data
+Volume=caddy-config.volume:/config
+
+# --- HEALTHCHECK ---
+HealthCmd=wget -q -O - http://127.0.0.1:2019/config/ >/dev/null || exit 1
+HealthInterval=30s
+HealthTimeout=5s
+HealthStartPeriod=10s
+HealthRetries=3
+
+[Service]
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

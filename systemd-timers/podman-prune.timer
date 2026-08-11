@@ -1,0 +1,10 @@
+[Unit]
+Description=Wöchentlicher Timer für Podman Image Cleanup
+
+[Timer]
+# Jeden Sonntag um 04:00 Uhr morgens (nach den Backups)
+OnCalendar=Sun *-*-* 04:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

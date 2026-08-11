@@ -1,0 +1,380 @@
+---
+# Grundkonfiguration eines neuen VPS: nacktes System -> gehaertetes,
+# rootless-Podman-faehiges System mit den Usern "admin" und "service".
+#
+# Erstlauf:  ansible-playbook playbooks/setup_vps.yml -u root
+# Re-Runs:   ansible-playbook playbooks/setup_vps.yml -u admin --ask-become-pass
+#            (root-SSH-Login wird am Ende dieses Playbooks deaktiviert)
+#
+# Dieses Playbook ist die Bus-Faktor-Absicherung fuer den Fall, dass der
+# Produktions-VPS komplett neu aufgesetzt werden muesste. Der Live-Host ist
+# bereits ueber osa/local-deployment's fast identisches Playbook gehaertet --
+# ein erster Lauf hier dient nur der Verifikation (--check --diff sollte
+# "keine Aenderung" melden), kein Routinebetrieb.
+
+- name: Grundkonfiguration eines neuen VPS
+  hosts: all
+  become: yes
+  vars:
+    local_ssh_pub_key: "{{ lookup('file', '~/.ssh/id_ed25519.pub') }}"
+
+  tasks:
+    # ------------------------------------------------------------------
+    # 1. Podman 5.x Repository (Distro-Defaults haengen meist auf 4.x fest)
+    # ------------------------------------------------------------------
+    - name: Podman-5-Repo einrichten (Debian/Ubuntu)
+      when: ansible_os_family == "Debian"
+      block:
+        - name: gnupg installieren (von apt_repository fuer Key-Handling benoetigt)
+          # Minimale Debian-13-Images (z.B. manche Hoster-Netinstall-Varianten)
+          # haben weder "gpg" noch das veraltete "apt-key" vorinstalliert -
+          # ansible.builtin.apt_repository braucht zwingend eines von beiden,
+          # auch wenn wir selbst schon modernes signed-by= verwenden.
+          ansible.builtin.apt:
+            name: gnupg
+            state: present
+            update_cache: yes
+
+        - name: /etc/apt/keyrings sicherstellen
+          ansible.builtin.file:
+            path: /etc/apt/keyrings
+            state: directory
+            mode: "0755"
+
+        - name: Alvistack GPG-Key herunterladen
+          ansible.builtin.get_url:
+            url: "https://download.opensuse.org/repositories/home:/alvistack/{{ ansible_distribution }}_{{ ansible_distribution_major_version }}/Release.key"
+            dest: /etc/apt/keyrings/alvistack.asc
+            mode: "0644"
+
+        - name: Alvistack APT-Repo eintragen
+          ansible.builtin.apt_repository:
+            repo: "deb [signed-by=/etc/apt/keyrings/alvistack.asc] https://download.opensuse.org/repositories/home:/alvistack/{{ ansible_distribution }}_{{ ansible_distribution_major_version }}/ /"
+            state: present
+            filename: alvistack-podman
+
+    - name: Podman-5-Repo einrichten (RedHat/Alma/Rocky 9)
+      when: ansible_os_family == "RedHat"
+      ansible.builtin.get_url:
+        url: "https://download.opensuse.org/repositories/home:/alvistack/CentOS_9_Stream/home:alvistack.repo"
+        dest: /etc/yum.repos.d/alvistack-podman.repo
+        mode: "0644"
+
+    - name: Podman-5-Repo einrichten (SUSE/openSUSE)
+      # Alvistack folgt hier keinem generischen "{distribution}_{version}"-Schema
+      # (z.B. "openSUSE_Leap_15.6", nicht "openSUSE Leap_15.6") - deshalb wie beim
+      # RedHat-Zweig fest verdrahtet statt templated. Ungetestet (kein SUSE-Host
+      # verfuegbar) - vor produktivem Einsatz auf einem echten SUSE-Host verifizieren.
+      when: ansible_os_family == "Suse"
+      community.general.zypper_repository:
+        name: alvistack-podman
+        repo: "https://download.opensuse.org/repositories/home:/alvistack/openSUSE_Leap_15.6/"
+        auto_import_keys: yes
+        state: present
+
+    # ------------------------------------------------------------------
+    # 2. System-Update & Paketinstallation
+    # ------------------------------------------------------------------
+    - name: Konfliktende distro-eigene Container-Tools entfernen (Debian)
+      when: ansible_os_family == "Debian"
+      ansible.builtin.apt:
+        name:
+          - podman
+          - buildah
+          - skopeo
+          - containers-common
+          - golang-github-containers-common
+          - golang-github-containers-image
+        state: absent
+        purge: yes
+      failed_when: false
+
+    - name: Vollupgrade + Kernpakete installieren (Debian)
+      when: ansible_os_family == "Debian"
+      block:
+        - ansible.builtin.apt:
+            update_cache: yes
+            upgrade: dist
+        - ansible.builtin.apt:
+            name:
+              - git
+              - podman
+              - netavark
+              - aardvark-dns
+              - ufw
+              - sudo
+              - uidmap
+              - dbus-user-session
+              - passt
+              - slirp4netns
+              - curl
+              - tar
+            state: present
+
+    - name: Vollupgrade + Kernpakete installieren (RedHat)
+      when: ansible_os_family == "RedHat"
+      block:
+        - ansible.builtin.dnf:
+            name: "*"
+            state: latest
+        - ansible.builtin.dnf:
+            name:
+              - git
+              - podman
+              - netavark
+              - aardvark-dns
+              - firewalld
+              - sudo
+              - shadow-utils
+              - passt
+              - slirp4netns
+              - curl
+              - tar
+            state: present
+
+    - name: Vollupgrade + Kernpakete installieren (SUSE)
+      when: ansible_os_family == "Suse"
+      block:
+        - community.general.zypper:
+            name: "*"
+            state: latest
+        - community.general.zypper:
+            name:
+              - git
+              - podman
+              - netavark
+              - aardvark-dns
+              - firewalld
+              - sudo
+              - shadow
+              - passt
+              - slirp4netns
+              - curl
+              - tar
+            state: present
+
+    # ------------------------------------------------------------------
+    # 3. User-Management: "admin" (sudo) + "service" (rootless Podman)
+    # ------------------------------------------------------------------
+    - name: Pruefen ob "admin" schon existiert
+      ansible.builtin.command: id admin
+      register: admin_check
+      changed_when: false
+      failed_when: false
+
+    - name: Pruefen ob "service" schon existiert
+      ansible.builtin.command: id service
+      register: service_check
+      changed_when: false
+      failed_when: false
+
+    - name: Zufaellige Passwoerter generieren
+      ansible.builtin.set_fact:
+        admin_pw: "{{ lookup('password', '/dev/null length=16 chars=ascii_letters,digits') }}"
+        service_pw: "{{ lookup('password', '/dev/null length=16 chars=ascii_letters,digits') }}"
+
+    - name: User "admin" anlegen
+      ansible.builtin.user:
+        name: admin
+        groups: "{{ 'sudo' if ansible_os_family == 'Debian' else 'wheel' }}"
+        append: yes
+        shell: /bin/bash
+        state: present
+
+    - name: User "service" anlegen
+      ansible.builtin.user:
+        name: service
+        shell: /bin/bash
+        state: present
+
+    - name: Pruefen ob Gruppe "systemd-journal" existiert
+      ansible.builtin.command: getent group systemd-journal
+      register: journal_group_check
+      changed_when: false
+      failed_when: false
+
+    - name: User "service" zu systemd-journal hinzufuegen
+      when: journal_group_check.rc == 0
+      ansible.builtin.user:
+        name: service
+        groups: systemd-journal
+        append: yes
+
+    - name: Passwort fuer "admin" setzen (nur bei Neuanlage)
+      when: admin_check.rc != 0
+      ansible.builtin.user:
+        name: admin
+        password: "{{ admin_pw | password_hash('sha512') }}"
+
+    - name: Passwort fuer "service" setzen (nur bei Neuanlage)
+      when: service_check.rc != 0
+      ansible.builtin.user:
+        name: service
+        password: "{{ service_pw | password_hash('sha512') }}"
+
+    # ------------------------------------------------------------------
+    # 4. Persistentes systemd-Journal
+    # ------------------------------------------------------------------
+    - name: /var/log/journal anlegen (falls systemd-journal-Gruppe existiert)
+      when: journal_group_check.rc == 0
+      ansible.builtin.file:
+        path: /var/log/journal
+        state: directory
+        owner: root
+        group: systemd-journal
+        mode: "2755"
+
+    - name: journald auf persistenten Storage umstellen
+      ansible.builtin.lineinfile:
+        path: /etc/systemd/journald.conf
+        regexp: "^#?Storage="
+        line: "Storage=persistent"
+      notify: restart journald
+
+    # ------------------------------------------------------------------
+    # 5. SSH-Key-Verteilung
+    # ------------------------------------------------------------------
+    - name: ~/.ssh fuer admin/service anlegen
+      loop: [admin, service]
+      ansible.builtin.file:
+        path: "/home/{{ item }}/.ssh"
+        state: directory
+        owner: "{{ item }}"
+        group: "{{ item }}"
+        mode: "0700"
+
+    - name: Lokalen Public-Key in authorized_keys eintragen
+      loop: [admin, service]
+      ansible.posix.authorized_key:
+        user: "{{ item }}"
+        key: "{{ local_ssh_pub_key }}"
+        state: present
+
+    # ------------------------------------------------------------------
+    # 6. Rootless Podman: Linger + Kernel-Tuning
+    # ------------------------------------------------------------------
+    - name: Linger fuer "service" aktivieren (Container ueberleben Logout)
+      ansible.builtin.command: loginctl enable-linger service
+      changed_when: true
+
+    - name: Unprivilegierte Ports ab 25 erlauben (fuer rootless Podman)
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/99-podman-ports.conf
+        content: "net.ipv4.ip_unprivileged_port_start=25\n"
+        mode: "0644"
+      notify: reload sysctl
+
+    - name: ~/.config/containers fuer "service" anlegen
+      ansible.builtin.file:
+        path: /home/service/.config/containers
+        state: directory
+        owner: service
+        group: service
+        mode: "0755"
+
+    - name: Rootless-Storage-Override fuer "service" schreiben
+      # Das von Alvistack ausgelieferte /usr/share/containers/storage.conf
+      # setzt "runroot" unbedingt auf den root-only Pfad
+      # "/run/containers/storage" - das uebersteuert Podmans eigene
+      # Rootless-Autoerkennung und laesst jeden Container-Start mit
+      # "permission denied" scheitern. Fix: eine eigene, minimale
+      # storage.conf fuer "service" OHNE runroot/graphroot-Zeile - dann
+      # greift wieder Podmans korrekter Rootless-Default
+      # ("$XDG_RUNTIME_DIR/containers" bzw. "~/.local/share/containers/storage").
+      ansible.builtin.copy:
+        dest: /home/service/.config/containers/storage.conf
+        content: |
+          [storage]
+          driver = "overlay"
+        owner: service
+        group: service
+        mode: "0644"
+
+    # ------------------------------------------------------------------
+    # 7. Reboot JETZT (finalisiert Kernel/Podman/sysctl-Aenderungen) -
+    # bewusst VOR der SSH-Haertung: das Reboot-Modul verbindet sich nach
+    # dem Neustart erneut als root, um den Host-Status zu pruefen. Wuerde
+    # PermitRootLogin=no schon vorher auf die Platte geschrieben sein,
+    # haette der frisch gestartete sshd root sofort ausgesperrt und das
+    # Modul haette sich bis zum reboot_timeout an der eigenen
+    # Reconnect-Pruefung aufgehaengt.
+    # ------------------------------------------------------------------
+    - name: Host neu starten (finalisiert Kernel/Podman/systemd-Aenderungen)
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+
+    # ------------------------------------------------------------------
+    # 8. Firewall: nur noch SSH + HTTP/HTTPS (Caddy)
+    # ------------------------------------------------------------------
+    - name: Firewall konfigurieren (Debian/UFW)
+      when: ansible_os_family == "Debian"
+      block:
+        - ansible.builtin.command: ufw default allow outgoing
+        - ansible.builtin.command: ufw default deny incoming
+        - ansible.builtin.command: ufw allow 22/tcp
+        - ansible.builtin.command: ufw allow 80/tcp
+        - ansible.builtin.command: ufw allow 443/tcp
+        - ansible.builtin.command: ufw --force enable
+
+    - name: Firewall konfigurieren (RedHat/SUSE/firewalld)
+      when: ansible_os_family in ["RedHat", "Suse"]
+      block:
+        - ansible.builtin.systemd:
+            name: firewalld
+            state: started
+            enabled: yes
+        - ansible.builtin.command: firewall-cmd --set-default-zone=public
+        - ansible.builtin.firewalld:
+            port: "{{ item }}"
+            permanent: yes
+            state: enabled
+          loop:
+            - 22/tcp
+            - 80/tcp
+            - 443/tcp
+        - ansible.builtin.command: firewall-cmd --reload
+
+    # ------------------------------------------------------------------
+    # 9. SSH-Haertung (nach dem Reboot - sperrt root erst am Play-Ende
+    # per Handler aus, keine root-Verbindung mehr noetig ab hier)
+    # ------------------------------------------------------------------
+    - name: Root-SSH-Login deaktivieren
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?PermitRootLogin"
+        line: "PermitRootLogin no"
+      notify: restart sshd
+
+    - name: Passwort-Login fuer "admin" deaktivieren (Key-only)
+      ansible.builtin.blockinfile:
+        path: /etc/ssh/sshd_config
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - admin key-only"
+        block: |
+          Match User admin
+              PasswordAuthentication no
+      notify: restart sshd
+
+    # ------------------------------------------------------------------
+    # 10. Abschluss: Passwort-Hinweis
+    # ------------------------------------------------------------------
+    - name: Generiertes admin-Passwort anzeigen (nur bei Neuanlage!)
+      when: admin_check.rc != 0
+      ansible.builtin.debug:
+        msg: "WICHTIG - jetzt sofort im Passwort-Safe sichern: admin / {{ admin_pw }}"
+
+  handlers:
+    - name: reload sysctl
+      ansible.builtin.command: sysctl --system
+      listen: reload sysctl
+
+    - name: restart sshd
+      ansible.builtin.systemd:
+        name: "{{ 'ssh' if ansible_os_family == 'Debian' else 'sshd' }}"
+        state: restarted
+      listen: restart sshd
+
+    - name: restart journald
+      ansible.builtin.systemd:
+        name: systemd-journald
+        state: restarted
+      listen: restart journald

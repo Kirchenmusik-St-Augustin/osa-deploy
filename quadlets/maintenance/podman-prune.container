@@ -1,0 +1,16 @@
+[Unit]
+Description=Podman Image Garbage Collector
+Requires=podman.socket
+After=network-online.target podman.socket
+
+[Container]
+ContainerName=podman-prune
+Image=quay.io/podman/stable:latest
+
+Volume=/run/user/1000/podman/podman.sock:/run/podman/podman.sock
+Environment=CONTAINER_HOST=unix:///run/podman/podman.sock
+
+Exec=/bin/sh -c 'podman image prune -a -f && echo "SUCCESS: All unused images have been cleaned up."'
+
+[Service]
+Restart=no
