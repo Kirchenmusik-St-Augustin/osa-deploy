@@ -5,6 +5,15 @@ Before=osa-backend.service
 [Pod]
 PodName=osa-backend-pod
 PublishPort=127.0.0.1:21000:8000
+# Maps the container's "app" user (uid=1000/gid=1000, see Dockerfile) onto
+# this host's calling user -- without it, rootless Podman's default
+# namespace mapping puts uid 1000 on an arbitrary subuid instead of onto
+# the owner of the mounted sqlite directory (mode 0700), so every DB
+# access fails with "unable to open database file". Same fix Legacy's own
+# pod already applies for its www-data uid=33 (see
+# osa/osa-einteilung.hochamt.at/containers/prod/quadlets/
+# einteilung.hochamt.at.pod).
+UserNS=keep-id:uid=1000,gid=1000
 # IPv4-only: pasta's default dual-stack IPv6 passthrough is fragile in this
 # host's network setup and can silently black-hole outbound IPv6
 # connections (e.g. to Google's cert endpoint during Google Login) without
