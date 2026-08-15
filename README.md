@@ -278,7 +278,10 @@ regenerate) — the Dozzle login stays unaffected by the cutover.
 `secrets/osa-backend.env`'s `KOOFR_USER`/`KOOFR_PASSWORD` should reuse
 Legacy's existing Koofr account credentials, so `scripts/backup_db.py`/
 `restore_db.py` (see below) access the same backup history as
-`osa-einteilung.hochamt.at/tools/restore-koofr-backup.sh`.
+`osa-einteilung.hochamt.at/tools/restore-koofr-backup.sh` -- though that
+script only recognizes backups created before 2026-08-13's stage-prefixed
+filename change (deliberate, accepted break, see `backup_service.py`'s
+module docstring).
 
 ## Disaster recovery / database restore
 
@@ -597,7 +600,10 @@ neu generieren) — der Dozzle-Login bleibt vom Cutover unberührt.
 `secrets/osa-backend.env`s `KOOFR_USER`/`KOOFR_PASSWORD` sollten Legacys
 bestehende Koofr-Kontodaten übernehmen, damit `scripts/backup_db.py`/
 `restore_db.py` (siehe unten) auf denselben Backup-Bestand zugreifen wie
-`osa-einteilung.hochamt.at/tools/restore-koofr-backup.sh`.
+`osa-einteilung.hochamt.at/tools/restore-koofr-backup.sh` -- dieses Skript
+erkennt allerdings nur Backups von vor der Stage-Präfix-Namensumstellung
+vom 13.08.2026 (bewusster, akzeptierter Bruch, siehe Modul-Docstring von
+`backup_service.py`).
 
 ## Disaster Recovery / Datenbank-Restore
 
