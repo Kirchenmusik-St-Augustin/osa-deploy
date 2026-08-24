@@ -7,9 +7,6 @@ is for what, how production is built, and how to set it up and deploy it.
 This repo itself contains everything operational: Ansible playbooks, Caddy
 configuration, Podman Quadlets, and (vault-encrypted) secrets.
 
-**Every command in this repo/README is only ever described by Claude,
-never executed by it — carrying it out is exclusively manual.**
-
 ## The repos at a glance
 
 | Repo | What | Tech stack | Deployed as |
@@ -204,9 +201,6 @@ Zentrales Betriebshandbuch für die Produktion von **OSA** (Orchester-Einteilung
 aufgebaut ist, und wie man sie aufsetzt und deployt. Dieses Repo selbst
 enthält alles Betriebliche: Ansible-Playbooks, Caddy-Konfiguration,
 Podman-Quadlets und (vault-verschlüsselte) Secrets.
-
-**Jeder Befehl in diesem Repo/README wird von Claude nur beschrieben, nie
-ausgeführt — die Durchführung ist ausschließlich manuell.**
 
 ## Die Repos im Überblick
 
