@@ -8,15 +8,6 @@ Image=ghcr.io/kirchenmusik-st-augustin/osa-backend:latest
 AutoUpdate=registry
 EnvironmentFile=%h/.env/osa-backend.env
 
-# Same host directory Legacy's own prod pod already mounts (see
-# osa/osa-einteilung.hochamt.at/containers/prod/quadlets/
-# einteilung.hochamt.at.pod) -- both stacks read/write the IDENTICAL
-# database.sqlite file, so the cutover never copies or migrates any data
-# (Phase 1 stays SQLite, CLAUDE.md section 3). This container must NEVER
-# run while Legacy's fpm/worker/scheduler containers are also running --
-# playbooks/flip.yml enforces that ordering, see the README's runbook.
-Volume=%h/data/osa/einteilung.hochamt.at/sqlite:/database:Z
-
 HealthCmd=python3 -c 'import urllib.request; urllib.request.urlopen("http://localhost:8000/")'
 HealthInterval=30s
 HealthTimeout=5s

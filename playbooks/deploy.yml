@@ -1,19 +1,15 @@
 ---
-# Tag-2-Betrieb: Secrets, Quadlet-DEFINITIONEN und Timer auf dem
-# Produktions-Host synchron halten. Ruehrt NIE an, welcher Stack (Legacy
-# oder der neue) gerade aktiv ist, und startet/restartet Caddy NIE --
-# beides ist ausschliesslich playbooks/flip.yml's Aufgabe (siehe dort und
-# die README, Abschnitt "Hin-/Rueckstieg"). Baut KEINE Images, klont KEINE
-# App-Repos -- die Images kommen bereits fertig gebaut aus ghcr.io und
-# werden vom bereits aktiven podman-auto-update.timer automatisch
-# eingespielt.
+# Tag-2-Betrieb: Secrets, Quadlet-Definitionen, die Caddyfile und Timer auf
+# dem Produktions-Host synchron halten, und den kompletten Stack (Caddy +
+# Backend + Frontend + Maintenance + Dozzle) am Laufen halten. Baut KEINE
+# Images, klont KEINE App-Repos -- die Images kommen bereits fertig gebaut
+# aus ghcr.io und werden vom bereits aktiven podman-auto-update.timer
+# automatisch eingespielt.
 #
 # Aufruf: ansible-playbook -i inventory/hosts.ini playbooks/deploy.yml --ask-vault-pass --check --diff
 #         ansible-playbook -i inventory/hosts.ini playbooks/deploy.yml --ask-vault-pass
 #
-# Sofort-Deploy statt auf den naechtlichen Auto-Update-Lauf zu warten --
-# NUR sinnvoll, wenn der jeweilige Stack laut dem letzten flip.yml-Lauf
-# gerade der aktive ist (siehe README):
+# Sofort-Deploy statt auf den naechtlichen Auto-Update-Lauf zu warten:
 #   ansible-playbook ... --ask-vault-pass --tags deploy-backend
 #   ansible-playbook ... --ask-vault-pass --tags deploy-frontend
 
@@ -25,15 +21,14 @@
     local_secrets_path: "../secrets"
     local_quadlets_path: "../quadlets"
     local_timers_path: "../systemd-timers"
+    local_caddyfile_path: "../config/caddy/Caddyfile"
 
     remote_env_dir: "{{ ansible_user_dir }}/.env"
     remote_quadlet_base: "{{ ansible_user_dir }}/.config/containers/systemd"
     remote_systemd_user_dir: "{{ ansible_user_dir }}/.config/systemd/user"
     xdg_runtime_dir: "/run/user/{{ ansible_facts.user_uid }}"
 
-    # Quadlet-Quellordner -> Zielpfad unter remote_quadlet_base. Caddy ist
-    # bewusst mit dabei (Definition wird synct), aber caddy.service wird
-    # von DIESEM Playbook nie gestartet/restartet -- siehe oben.
+    # Quadlet-Quellordner -> Zielpfad unter remote_quadlet_base.
     quadlet_targets:
       - { src: caddy, dest: "osa/infrastructure/caddy" }
       - { src: maintenance, dest: "osa/infrastructure/maintenance" }
@@ -41,13 +36,12 @@
       - { src: backend, dest: "osa/osa-backend" }
       - { src: frontend, dest: "osa/osa-frontend" }
 
-    # Units, die IMMER laufen duerfen, unabhaengig davon welcher Stack
-    # gerade laut flip.yml aktiv ist -- Frontend ist zustandslos (kein
-    # DB-Zugriff), Dozzle liest nur read-only den Podman-Socket.
-    # osa-backend-pod.service und einteilung.hochamt.at-pod.service
-    # gehoeren AUSDRUECKLICH NICHT hierher, siehe flip.yml.
+    # Der komplette Stack -- ein einziger Satz Units, kein Umschalten
+    # zwischen zwei Ständen mehr (Legacy ist entsorgt).
     managed_units_safe:
       - podman-prune.timer
+      - caddy.service
+      - osa-backend-pod.service
       - osa-frontend-pod.service
       - logging-dozzle.service
 
@@ -58,7 +52,7 @@
         - "{{ remote_env_dir }}"
         - "{{ remote_quadlet_base }}"
         - "{{ remote_systemd_user_dir }}"
-        - "{{ ansible_user_dir }}/data/osa/einteilung.hochamt.at/sqlite"
+        - "{{ ansible_user_dir }}/data/osa/einteilung.hochamt.at/postgres"
       ansible.builtin.file:
         path: "{{ item }}"
         state: directory
@@ -104,6 +98,16 @@
         dest: "{{ remote_quadlet_base }}/{{ item.dest }}/"
         mode: "0644"
 
+    # caddy.container's Volume-Mount erwartet die Caddyfile direkt neben
+    # der Quadlet-Definition, siehe quadlets/caddy/caddy.container.
+    - name: Caddyfile kopieren
+      tags: [always]
+      ansible.builtin.copy:
+        src: "{{ local_caddyfile_path }}"
+        dest: "{{ remote_quadlet_base }}/osa/infrastructure/caddy/Caddyfile"
+        mode: "0644"
+      register: caddyfile_copy
+
     - name: Systemd-Timer kopieren (kein Quadlet, eigener Zielpfad)
       tags: [always]
       ansible.builtin.copy:
@@ -119,7 +123,7 @@
       environment:
         XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
 
-    - name: Immer-sichere Dienste + Timer aktivieren + starten
+    - name: Stack-Dienste + Timer aktivieren + starten
       tags: [always]
       loop: "{{ managed_units_safe }}"
       ansible.builtin.systemd:
@@ -130,12 +134,20 @@
       environment:
         XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
 
+    - name: Caddy neu starten, falls sich die Caddyfile geändert hat
+      tags: [always]
+      when: caddyfile_copy.changed
+      ansible.builtin.systemd:
+        scope: user
+        name: caddy.service
+        state: restarted
+      environment:
+        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+
     # ------------------------------------------------------------------
-    # Sofort-Deploy (nur bei explizitem --tags) -- setzt voraus, dass der
-    # jeweilige Stack laut dem letzten flip.yml-Lauf gerade der aktive
-    # ist. Ein --tags deploy-backend WAEHREND target=legacy aktiv ist,
-    # wuerde osa-backend-pod parallel zu Legacy hochziehen -- siehe
-    # README, Abschnitt "Hin-/Rueckstieg", bevor dieser Tag benutzt wird.
+    # Sofort-Deploy (nur bei explizitem --tags) -- pullt das aktuelle
+    # :latest-Image und startet den betroffenen Pod neu, statt auf den
+    # naechtlichen podman-auto-update.timer zu warten.
     # ------------------------------------------------------------------
     - name: "Sofort-Deploy osa-backend: Image pullen"
       tags: [never, deploy-backend]
