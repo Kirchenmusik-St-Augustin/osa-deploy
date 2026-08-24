@@ -5,6 +5,10 @@ Before=osa-backend.service
 [Pod]
 PodName=osa-backend-pod
 PublishPort=127.0.0.1:21000:8000
+# Loopback-only -- lets an admin run psql directly from the host for
+# diagnostics, never reachable from outside. Mirrors vb-api.pod's own
+# Postgres sidecar port in the sister project.
+PublishPort=127.0.0.1:5432:5432
 # Maps the container's "app" user (uid=1000/gid=1000, see Dockerfile) onto
 # this host's calling user -- without it, rootless Podman's default
 # namespace mapping puts uid 1000 on an arbitrary subuid instead of onto

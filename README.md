@@ -256,6 +256,92 @@ Legacy pod, prune images. Keep the pre-cutover backup permanently (it
 otherwise doesn't survive Koofr's 28-day sweep) — it remains the last
 reachable Legacy data state, in case it's ever needed again.
 
+## Postgres cutover
+
+Structural 1:1 SQLite → PostgreSQL migration (`osa-backend`'s
+`app/db/models/` unchanged, no schema redesign — see that repo's own
+migration plan for the full rationale). Measured ETL runtime against the
+real ~619 MB dev SQLite file: **32 seconds** for 163k rows across 30
+tables — that's the actual downtime budget below, steps 5-9, not counting
+verification.
+
+**Why the `development` → `main` merge stays coupled to this runbook, not
+done ahead of time:** a push to `main` triggers `osa-backend`'s CI to build
+and push a new `:latest` image to `ghcr.io`. `osa-backend.container` runs
+with `AutoUpdate=registry`, and Podman's own `podman-auto-update.timer`
+(daily) would pull and restart it **on its own**, before the Postgres
+sidecar below exists — hence merging only as step 3, immediately followed
+by a manual pull in step 6 (not waiting for the daily timer).
+
+1. Announce a maintenance window.
+2. **Final backup via the current, still-running mechanism** (SQLite):
+   ```bash
+   ssh service@<prod-host>
+   podman exec osa-backend python scripts/backup_db.py
+   ```
+3. Merge `osa-backend`'s `development` → `main` PR on GitHub (own
+   account, web UI) — triggers the image build above. Wait for the
+   `release-image` job to finish (GitHub Actions tab) before continuing.
+4. Deploy the new quadlet + secret (still no downtime — the existing
+   `osa-backend` container keeps running against SQLite throughout):
+   ```bash
+   # secrets/osa-backend-pg.env created+vault-encrypted locally first,
+   # see "Maintaining secrets" below.
+   ansible-playbook -i inventory/hosts.ini playbooks/deploy.yml --check --diff
+   ansible-playbook -i inventory/hosts.ini playbooks/deploy.yml
+   ```
+   Verify: `systemctl --user status osa-backend-pg`, wait for
+   `pg_isready`-green in its healthcheck.
+5. **Stop the app container — downtime starts here:**
+   ```bash
+   systemctl --user stop osa-backend.service
+   ```
+6. Pull the already-built image manually (don't wait for the daily
+   timer), then run the ETL once:
+   ```bash
+   podman pull ghcr.io/kirchenmusik-st-augustin/osa-backend:latest
+   podman run --rm --pod osa-backend-pod \
+     --env-file ~/.env/osa-backend.env \
+     --env-file ~/.env/osa-backend-pg.env \
+     -e DATABASE_URL=postgresql://osa:<password>@127.0.0.1:5432/osa \
+     -v ~/data/osa/einteilung.hochamt.at/sqlite:/database:Z \
+     ghcr.io/kirchenmusik-st-augustin/osa-backend:latest \
+     python scripts/migration_archive/sqlite2pg.py
+   ```
+7. **Hard verification, not "looked fine":** `SELECT COUNT(*)` on both
+   sides for all 30 migrated tables (the ETL script's own log output
+   already lists per-table row counts — diff that against
+   `sqlite3 database/database.sqlite "SELECT COUNT(*) FROM <table>"` from
+   step 2's backup, or a fresh read of the live file before step 5).
+   Confirm `migrations`/`queue_jobs`/`queue_failed_jobs` are intentionally
+   absent from Postgres (dead Laravel-only tables, not a copy bug — see
+   the migration plan).
+8. Point the app at the new database:
+   ```bash
+   ansible-vault edit secrets/osa-backend.env   # DATABASE_URL -> postgresql://...
+   ansible-playbook -i inventory/hosts.ini playbooks/deploy.yml
+   ```
+9. Restart the app — `alembic upgrade head` runs automatically on
+   container start, should be a no-op here (schema already exists):
+   ```bash
+   systemctl --user start osa-backend.service
+   ```
+10. Verify like the forward-flip runbook above: `podman logs osa-backend`,
+    `curl 127.0.0.1:21000/`, external checks, a real browser login + one
+    booking view.
+11. **Trigger the backup job once manually** and confirm it actually
+    produces a Koofr backup via the new `pg_dump` path (don't wait for the
+    next scheduled `03:00` run):
+    ```bash
+    podman exec osa-backend python scripts/backup_db.py
+    ```
+12. Close the maintenance window once step 10+11 are fully green.
+13. **Deliberately keep the old SQLite file**
+    (`~/data/osa/einteilung.hochamt.at/sqlite`) — last cold fallback,
+    rollback path is `DATABASE_URL` back to `sqlite:///…` + pod restart,
+    until a deliberate cleanup decision is made (≥1 week bake time, same
+    convention as the Legacy decommissioning above).
+
 ## Maintaining secrets
 
 `secrets/caddy.env`, `secrets/osa-backend.env`, `secrets/osa-frontend.env`
@@ -282,6 +368,19 @@ Legacy's existing Koofr account credentials, so `scripts/backup_db.py`/
 script only recognizes backups created before 2026-08-13's stage-prefixed
 filename change (deliberate, accepted break, see `backup_service.py`'s
 module docstring).
+
+`secrets/osa-backend-pg.env` (Postgres cutover, see above) has no
+`.example` template (mirrors the sister project's `vb-api-pg.env`) —
+create it fresh with a freshly generated password, never reuse the dev
+one:
+```bash
+cat > secrets/osa-backend-pg.env <<'EOF'
+POSTGRES_USER=osa
+POSTGRES_PASSWORD=<paste output of: python3 -c "import secrets; print(secrets.token_urlsafe(32))">
+POSTGRES_DB=osa
+EOF
+ansible-vault encrypt secrets/osa-backend-pg.env
+```
 
 ## Disaster recovery / database restore
 
@@ -578,6 +677,95 @@ Legacy-Pod entfernen, Images prunen. Den Pre-Cutover-Backup dauerhaft
 aufheben (überlebt sonst Koofrs 28-Tage-Sweep nicht) — er bleibt der letzte
 greifbare Legacy-Datenstand, falls je wieder gebraucht.
 
+## Postgres-Cutover
+
+Struktureller 1:1-SQLite→PostgreSQL-Übertrag (`osa-backend`s
+`app/db/models/` unverändert, kein Schema-Redesign — vollständige
+Begründung im Migrationsplan des Repos). Gemessene ETL-Laufzeit gegen die
+reale ~619-MB-Dev-SQLite-Datei: **32 Sekunden** für 163.000 Zeilen über 30
+Tabellen — das ist das tatsächliche Downtime-Budget unten, Schritte 5-9,
+Verifikation nicht mitgerechnet.
+
+**Warum der `development`→`main`-Merge zeitlich an dieses Runbook gekoppelt
+bleibt, nicht vorab passiert:** Ein Push nach `main` löst `osa-backend`s
+CI aus, die ein neues `:latest`-Image nach `ghcr.io` baut+pusht.
+`osa-backend.container` läuft mit `AutoUpdate=registry`, und Podmans
+eigener `podman-auto-update.timer` (täglich) würde es **von selbst**
+pullen und neu starten, bevor der Postgres-Sidecar unten existiert — daher
+der Merge erst als Schritt 3, direkt gefolgt von einem manuellen Pull in
+Schritt 6 (nicht auf den täglichen Timer warten).
+
+1. Wartungsfenster ankündigen.
+2. **Finales Backup über den aktuell laufenden Mechanismus** (SQLite):
+   ```bash
+   ssh service@<prod-host>
+   podman exec osa-backend python scripts/backup_db.py
+   ```
+3. `osa-backend`s `development`→`main`-PR auf GitHub mergen (eigener
+   Account, Web-UI) — löst den obigen Image-Build aus. Auf den
+   `release-image`-Job warten (GitHub-Actions-Tab), bevor es weitergeht.
+4. Neuen Quadlet + Secret ausrollen (immer noch keine Downtime — der
+   bestehende `osa-backend`-Container läuft währenddessen unverändert
+   gegen SQLite weiter):
+   ```bash
+   # secrets/osa-backend-pg.env vorher lokal angelegt+vault-verschlüsselt,
+   # siehe "Secrets pflegen" unten.
+   ansible-playbook -i inventory/hosts.ini playbooks/deploy.yml --check --diff
+   ansible-playbook -i inventory/hosts.ini playbooks/deploy.yml
+   ```
+   Verifizieren: `systemctl --user status osa-backend-pg`, auf grünen
+   `pg_isready`-Healthcheck warten.
+5. **App-Container stoppen — ab hier beginnt die Downtime:**
+   ```bash
+   systemctl --user stop osa-backend.service
+   ```
+6. Das bereits gebaute Image manuell pullen (nicht auf den täglichen
+   Timer warten), dann das ETL einmalig laufen lassen:
+   ```bash
+   podman pull ghcr.io/kirchenmusik-st-augustin/osa-backend:latest
+   podman run --rm --pod osa-backend-pod \
+     --env-file ~/.env/osa-backend.env \
+     --env-file ~/.env/osa-backend-pg.env \
+     -e DATABASE_URL=postgresql://osa:<password>@127.0.0.1:5432/osa \
+     -v ~/data/osa/einteilung.hochamt.at/sqlite:/database:Z \
+     ghcr.io/kirchenmusik-st-augustin/osa-backend:latest \
+     python scripts/migration_archive/sqlite2pg.py
+   ```
+7. **Harte Verifikation, kein "sah gut aus":** `SELECT COUNT(*)` auf
+   beiden Seiten für alle 30 migrierten Tabellen (das ETL-Skript listet
+   die Zeilenzahlen pro Tabelle bereits selbst im Log — dagegen
+   `sqlite3 database/database.sqlite "SELECT COUNT(*) FROM <table>"` aus
+   dem Backup von Schritt 2 gegenchecken, bzw. einen frischen Read der
+   Live-Datei vor Schritt 5). Bestätigen, dass `migrations`/`queue_jobs`/
+   `queue_failed_jobs` bewusst NICHT in Postgres existieren (toter
+   Laravel-Ballast, kein Kopierfehler — siehe Migrationsplan).
+8. Die App auf die neue Datenbank umstellen:
+   ```bash
+   ansible-vault edit secrets/osa-backend.env   # DATABASE_URL -> postgresql://...
+   ansible-playbook -i inventory/hosts.ini playbooks/deploy.yml
+   ```
+9. App neu starten — `alembic upgrade head` läuft automatisch beim
+   Container-Start, sollte hier ein No-Op sein (Schema existiert schon):
+   ```bash
+   systemctl --user start osa-backend.service
+   ```
+10. Verifizieren wie im Hinstieg-Runbook oben: `podman logs osa-backend`,
+    `curl 127.0.0.1:21000/`, externe Checks, ein echter Browser-Login +
+    eine Buchungsansicht.
+11. **Backup-Job einmal manuell antriggern** und bestätigen, dass er über
+    den neuen `pg_dump`-Pfad tatsächlich ein Koofr-Backup erzeugt (nicht
+    auf den nächsten planmäßigen `03:00`-Lauf warten):
+    ```bash
+    podman exec osa-backend python scripts/backup_db.py
+    ```
+12. Wartungsfenster schließen, sobald Schritt 10+11 vollständig grün sind.
+13. Die alte SQLite-Datei **bewusst behalten**
+    (`~/data/osa/einteilung.hochamt.at/sqlite`) — letzte kalte
+    Rückfallebene, Rollback-Pfad ist `DATABASE_URL` zurück auf
+    `sqlite:///…` + Pod-Neustart, bis eine bewusste Aufräum-Entscheidung
+    fällt (≥1 Woche Bewährungsfrist, dieselbe Konvention wie bei der
+    Legacy-Entsorgung oben).
+
 ## Secrets pflegen
 
 `secrets/caddy.env`, `secrets/osa-backend.env`, `secrets/osa-frontend.env`
@@ -604,6 +792,19 @@ bestehende Koofr-Kontodaten übernehmen, damit `scripts/backup_db.py`/
 erkennt allerdings nur Backups von vor der Stage-Präfix-Namensumstellung
 vom 13.08.2026 (bewusster, akzeptierter Bruch, siehe Modul-Docstring von
 `backup_service.py`).
+
+`secrets/osa-backend-pg.env` (Postgres-Cutover, siehe oben) hat keine
+`.example`-Vorlage (analog zu `vb-api-pg.env` im Schwesterprojekt) — frisch
+anlegen, mit einem neu generierten Passwort, niemals das Dev-Passwort
+wiederverwenden:
+```bash
+cat > secrets/osa-backend-pg.env <<'EOF'
+POSTGRES_USER=osa
+POSTGRES_PASSWORD=<Ausgabe von: python3 -c "import secrets; print(secrets.token_urlsafe(32))">
+POSTGRES_DB=osa
+EOF
+ansible-vault encrypt secrets/osa-backend-pg.env
+```
 
 ## Disaster Recovery / Datenbank-Restore
 
