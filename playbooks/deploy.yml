@@ -8,7 +8,7 @@
 #
 # Aufruf: ansible-playbook -i inventory/<stage>.ini playbooks/deploy.yml --ask-vault-pass --check --diff
 #         ansible-playbook -i inventory/<stage>.ini playbooks/deploy.yml --ask-vault-pass
-# <stage> ist eine der Dateien in inventory/ (production/development/test/qa).
+# <stage> ist eine der Dateien in inventory/ (production/test/qa).
 #
 # Sofort-Deploy statt auf den naechtlichen Auto-Update-Lauf zu warten:
 #   ansible-playbook -i inventory/<stage>.ini ... --ask-vault-pass --tags deploy-backend
@@ -48,15 +48,20 @@
       - logging-dozzle.service
 
   tasks:
-    - name: app_environment gegen die vier gueltigen Stages pruefen
+    # "development" ist absichtlich NICHT in dieser Liste: lokale
+    # Entwicklung laeuft ueber den Vite-Dev-Server direkt auf der
+    # Dev-Maschine, nie ueber diesen Ansible-Flow -- auch wenn es einer der
+    # vier gueltigen APP_ENVIRONMENT-Werte im Backend selbst ist (siehe
+    # osa-backend/app/core/config.py's _VALID_ENVIRONMENTS).
+    - name: app_environment gegen die gueltigen Ansible-Deploy-Stages pruefen
       tags: [always]
       ansible.builtin.assert:
         that:
-          - "app_environment in ['development', 'test', 'qa', 'production']"
+          - "app_environment in ['test', 'qa', 'production']"
         fail_msg: >-
           app_environment='{{ app_environment }}' ist ungueltig. Muss eines
-          von development/test/qa/production sein (siehe osa-backend/app/
-          core/config.py's _VALID_ENVIRONMENTS).
+          von test/qa/production sein ("development" wird nie ueber
+          osa-deploy ausgerollt).
 
     - name: Verzeichnisstruktur anlegen
       tags: [always]

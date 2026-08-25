@@ -85,13 +85,16 @@ security boundary as the sister project `vb-fastapi-vue`/`vb-deploy`).
 
 ## Stages
 
-`inventory/` holds one file per stage — `production.ini`, `development.ini`,
-`test.ini`, `qa.ini` — matching `osa-backend`'s `APP_ENVIRONMENT` values
-exactly. Every command below takes `-i inventory/<stage>.ini`; there is no
-default inventory, so a missing `-i` fails loudly instead of silently
-targeting the wrong stage. Only `production` is a real, currently deployed
-target — `development`/`test`/`qa` are placeholder skeletons
-(`CHANGEME.example.invalid`) until a dedicated VPS exists for them. Each
+`inventory/` holds one file per stage this repo can actually deploy to —
+`production.ini`, `test.ini`, `qa.ini`. `osa-backend` has a fourth valid
+`APP_ENVIRONMENT` value, `development`, but that one is deliberately not an
+Ansible target here: local development runs against the Vite dev server
+directly on the dev machine, never through this repo. Every command below
+takes `-i inventory/<stage>.ini`; there is no default inventory, so a
+missing `-i` fails loudly instead of silently targeting the wrong stage.
+Only `production` is a real, currently deployed target — `test`/`qa` are
+placeholder skeletons (`CHANGEME.example.invalid`) until a dedicated VPS
+exists for them. Each
 stage's `inventory/<stage>.ini` also carries `backend_domain`,
 `frontend_domain`, and `shorturl_domain` — independent variables (backend
 and frontend don't have to share a domain, see `osa-backend`'s
@@ -314,14 +317,17 @@ administrative Root-Aufgaben (`sudo`), er betreibt selbst keine Container
 
 ## Stages
 
-`inventory/` enthält eine Datei pro Stage — `production.ini`,
-`development.ini`, `test.ini`, `qa.ini` — genau passend zu `osa-backend`s
-`APP_ENVIRONMENT`-Werten. Jeder Befehl unten braucht `-i
-inventory/<stage>.ini`; es gibt kein Default-Inventory, ein fehlendes `-i`
-schlägt also laut fehl, statt still die falsche Stage zu treffen. Nur
-`production` ist ein reales, aktuell deployetes Ziel — `development`/
-`test`/`qa` sind Platzhalter-Skelette (`CHANGEME.example.invalid`), bis für
-sie ein eigener VPS existiert. Jede `inventory/<stage>.ini` trägt außerdem
+`inventory/` enthält eine Datei pro Stage, die dieses Repo tatsächlich
+deployen kann — `production.ini`, `test.ini`, `qa.ini`. `osa-backend` kennt
+mit `development` einen vierten gültigen `APP_ENVIRONMENT`-Wert, der aber
+bewusst kein Ansible-Ziel hier ist: lokale Entwicklung läuft direkt über
+den Vite-Dev-Server auf der Dev-Maschine, nie über dieses Repo. Jeder
+Befehl unten braucht `-i inventory/<stage>.ini`; es gibt kein
+Default-Inventory, ein fehlendes `-i` schlägt also laut fehl, statt still
+die falsche Stage zu treffen. Nur `production` ist ein reales, aktuell
+deployetes Ziel — `test`/`qa` sind Platzhalter-Skelette
+(`CHANGEME.example.invalid`), bis für sie ein eigener VPS existiert. Jede
+`inventory/<stage>.ini` trägt außerdem
 `backend_domain`, `frontend_domain` und `shorturl_domain` — unabhängige
 Variablen (Backend und Frontend müssen sich keine Domain teilen, siehe
 `osa-backend`s `samesite=none`/CSRF-Origin-Check-Unterstützung für
