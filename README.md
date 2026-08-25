@@ -31,8 +31,7 @@ A single VPS carries all of production. Instead of classic root Docker
 containers, everything runs **rootless** under a dedicated, unprivileged
 Linux user named `service` — a compromised container can't escalate
 straight to host root. A second user `admin` exists only for
-administrative root tasks (`sudo`), it never runs containers itself (same
-security boundary as the sister project `vb-fastapi-vue`/`vb-deploy`).
+administrative root tasks (`sudo`), it never runs containers itself.
 
 - **systemd Quadlets** instead of `docker-compose`: every container/pod is
   described as a `.container`/`.pod`/`.volume` file, which `systemd --user`
@@ -42,8 +41,7 @@ security boundary as the sister project `vb-fastapi-vue`/`vb-deploy`).
   Legacy (PHP/Laravel) has been fully decommissioned — this is the only
   stack running.
 - **Caddy** is the only service listening publicly on port 80/443,
-  terminates TLS, and reverse-proxies **path-based** (not per subdomain
-  like in the sister project) onto the same domain:
+  terminates TLS, and reverse-proxies **path-based** onto the same domain:
   ```
   Internet
      │  :80 / :443
@@ -171,9 +169,9 @@ ones, so `scripts/backup_db.py`/`restore_db.py` (see below) always see the
 same backup history regardless of stage. `SMTP_*` should stay
 blank/commented on non-production stages (no mail sending outside prod).
 
-`secrets/<stage>/osa-backend-pg.env` has no `.example` template (mirrors
-the sister project's `vb-api-pg.env`) — create it fresh per stage with a
-freshly generated password, never reuse another stage's:
+`secrets/<stage>/osa-backend-pg.env` has no `.example` template — create it
+fresh per stage with a freshly generated password, never reuse another
+stage's:
 ```bash
 cat > secrets/production/osa-backend-pg.env <<'EOF'
 POSTGRES_USER=osa
@@ -262,9 +260,7 @@ Ein einzelner VPS trägt die gesamte Produktion. Statt klassischer Root-Docker-
 Container läuft alles **rootless** unter einem eigenen, unprivilegierten
 Linux-User namens `service` — ein kompromittierter Container kann so nicht
 direkt auf Host-Root eskalieren. Ein zweiter User `admin` existiert nur für
-administrative Root-Aufgaben (`sudo`), er betreibt selbst keine Container
-(gleiche Sicherheitsgrenze wie im Schwesterprojekt `vb-fastapi-vue`/
-`vb-deploy`).
+administrative Root-Aufgaben (`sudo`), er betreibt selbst keine Container.
 
 - **systemd Quadlets** statt `docker-compose`: jeder Container/Pod wird als
   `.container`/`.pod`/`.volume`-Datei beschrieben, die `systemd --user`
@@ -274,8 +270,7 @@ administrative Root-Aufgaben (`sudo`), er betreibt selbst keine Container
   Legacy (PHP/Laravel) ist vollständig stillgelegt — das hier ist der
   einzige laufende Stack.
 - **Caddy** ist der einzige Dienst, der öffentlich auf Port 80/443 lauscht,
-  terminiert TLS und reverse-proxied **pfadbasiert** (nicht pro Subdomain
-  wie im Schwesterprojekt) auf dieselbe Domain:
+  terminiert TLS und reverse-proxied **pfadbasiert** auf dieselbe Domain:
   ```
   Internet
      │  :80 / :443
@@ -405,10 +400,9 @@ damit `scripts/backup_db.py`/`restore_db.py` (siehe unten) stageunabhängig
 auf denselben Backup-Bestand zugreifen. `SMTP_*` sollte auf Non-Prod-Stages
 leer/auskommentiert bleiben (kein Mailversand außerhalb von Prod).
 
-`secrets/<stage>/osa-backend-pg.env` hat keine `.example`-Vorlage (analog
-zu `vb-api-pg.env` im Schwesterprojekt) — pro Stage frisch anlegen, mit
-einem neu generierten Passwort, niemals das einer anderen Stage
-wiederverwenden:
+`secrets/<stage>/osa-backend-pg.env` hat keine `.example`-Vorlage — pro
+Stage frisch anlegen, mit einem neu generierten Passwort, niemals das
+einer anderen Stage wiederverwenden:
 ```bash
 cat > secrets/production/osa-backend-pg.env <<'EOF'
 POSTGRES_USER=osa
