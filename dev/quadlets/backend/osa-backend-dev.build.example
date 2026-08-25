@@ -1,0 +1,11 @@
+[Unit]
+Description=OSA Backend API (Dev, image build)
+
+[Build]
+SetWorkingDirectory=%h/projects/osa-fastapi-vue/osa-backend
+File=%h/projects/osa-fastapi-vue/osa-backend/Dockerfile
+ImageTag=localhost/osa-backend-dev:latest
+Target=dev
+
+[Install]
+WantedBy=default.target

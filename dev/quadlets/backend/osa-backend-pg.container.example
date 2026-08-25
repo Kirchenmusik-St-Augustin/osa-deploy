@@ -1,0 +1,23 @@
+[Unit]
+Description=PostgreSQL for OSA Backend (Dev)
+
+[Container]
+ContainerName=osa-backend-pg
+Pod=osa-backend.pod
+Image=docker.io/library/postgres:18
+AutoUpdate=registry
+EnvironmentFile=%h/.env/osa-backend-pg.env
+Volume=%h/data/osa-backend/postgres:/var/lib/postgresql:Z
+
+HealthCmd=pg_isready -U osa -d osa || exit 1
+HealthInterval=10s
+HealthTimeout=10s
+HealthStartPeriod=15s
+HealthRetries=3
+
+[Service]
+Restart=always
+TimeoutStartSec=180
+
+[Install]
+WantedBy=default.target

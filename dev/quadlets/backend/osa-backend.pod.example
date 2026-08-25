@@ -1,0 +1,25 @@
+[Unit]
+Wants=osa-backend.service osa-backend-pg.service
+Before=osa-backend.service osa-backend-pg.service
+
+[Pod]
+PodName=osa-backend-pod
+PublishPort=127.0.0.1:21000:8000
+# 5433, not Postgres' default 5432 -- adjust the host port if 5432 is
+# already bound by another project's Postgres sidecar on your dev host.
+PublishPort=127.0.0.1:5433:5432
+# Optional: route outgoing SMTP to a local mail-catcher (e.g. Mailpit) so
+# dev/test emails never try to leave the machine. Point this at whatever
+# SMTP-capturing tool you use, or delete the line entirely -- mail sending
+# is optional on dev (see SMTP_HOST/SMTP_PORT in osa-backend.env.example).
+# AddHost=mail.<your-dev-domain>:host-gateway
+# Dev doesn't need the explicit uid=1000,gid=1000 mapping production's
+# UserNS uses -- there's no cross-machine UID mismatch to bridge here.
+UserNS=keep-id
+# Dev also doesn't need production's IPv4-only pasta workaround (see
+# quadlets/backend/osa-backend.pod in this repo) -- default bridge
+# networking is fine on a single dev machine. An intentional
+# simplification, not an oversight.
+
+[Install]
+WantedBy=default.target

@@ -16,9 +16,9 @@
 	handle /logging/dozzle* {
 		reverse_proxy 127.0.0.1:8081
 	}
-	# Legacy-compat redirect: hochamt.at/go/{path} existed before the
-	# dedicated go.-subdomain below and redirected there too -- same
-	# pattern already proven in dev (einteilung.hochamt.at.dev.schimpl.cc).
+	# Compat redirect: hochamt.at/go/{path} existed before the dedicated
+	# go.-subdomain below and redirected there too -- same pattern already
+	# proven in local development.
 	handle_path /go/* {
 		redir https://{{ shorturl_domain }}{uri} 302
 	}
