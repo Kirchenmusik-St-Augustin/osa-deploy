@@ -6,8 +6,7 @@ Before=osa-backend.service osa-backend-pg.service
 PodName=osa-backend-pod
 PublishPort=127.0.0.1:21000:8000
 # Loopback-only -- lets an admin run psql directly from the host for
-# diagnostics, never reachable from outside. Mirrors vb-api.pod's own
-# Postgres sidecar port in the sister project.
+# diagnostics, never reachable from outside.
 PublishPort=127.0.0.1:5432:5432
 # Maps the container's "app" user (uid=1000/gid=1000, see Dockerfile) onto
 # this host's calling user -- without it, rootless Podman's default
@@ -19,8 +18,8 @@ UserNS=keep-id:uid=1000,gid=1000
 # IPv4-only: pasta's default dual-stack IPv6 passthrough is fragile in this
 # host's network setup and can silently black-hole outbound IPv6
 # connections (e.g. to Google's cert endpoint during Google Login) without
-# ever erroring or timing out on its own -- same reasoning as vb-api's own
-# pod in the sister project. Nothing in this stack needs outbound IPv6.
+# ever erroring or timing out on its own. Nothing in this stack needs
+# outbound IPv6.
 Network=pasta:-4
 
 [Install]

@@ -207,9 +207,9 @@
       # NICHT osa-backend.service direkt neu starten: der Container ist
       # per generiertem BindsTo= an osa-backend-pod.service gebunden --
       # ein Container-Restart stoppt dabei den ganzen Pod, aber nichts
-      # startet ihn danach von selbst wieder wieder (empirisch verifiziert
-      # im Schwesterprojekt). Der Pod-Service selbst zieht den enthaltenen
-      # Container ueber Wants=/Before= korrekt wieder hoch.
+      # startet ihn danach von selbst wieder (empirisch verifiziert). Der
+      # Pod-Service selbst zieht den enthaltenen Container ueber
+      # Wants=/Before= korrekt wieder hoch.
       tags: [never, deploy-backend]
       ansible.builtin.systemd:
         scope: user
