@@ -184,6 +184,18 @@ A manual backup before risky changes:
 scripts (all parameters incl. `--dry-run`/`--cleanup`) in
 [`osa-backend`'s README](../osa-backend/README.md).
 
+Starting `osa-backend-pg` against a brand-new, empty data directory (a
+fresh VPS setup, or a Postgres major-version bump) needs its image already
+present locally *before* the pod starts: Quadlet's pod-exit-policy default
+tears the pod down the moment it looks momentarily empty, which can race a
+slow first-time image pull and kill it mid-download (hit during the
+2026-08-25 PostgreSQL 18 upgrade). Pre-pull explicitly first:
+
+```bash
+podman pull docker.io/library/postgres:<target-version>
+systemctl --user start osa-backend-pg.service
+```
+
 ## Retiring the old repos
 
 `osa-deploy` fully replaces `osa/local-deployment` **and**
@@ -380,6 +392,19 @@ Ein manueller Backup vor riskanten Änderungen:
 `podman exec osa-backend python scripts/backup_db.py`. Volle Doku zu
 beiden Skripten (alle Parameter inkl. `--dry-run`/`--cleanup`) in
 [`osa-backend`s README](../osa-backend/README.md).
+
+`osa-backend-pg` gegen ein brandneues, leeres Datenverzeichnis zu starten
+(frisches VPS-Setup oder ein Postgres-Major-Version-Bump) braucht das
+zugehörige Image bereits lokal vorhanden, *bevor* der Pod startet:
+Quadlets Pod-Exit-Policy-Default reißt den Pod ab, sobald er kurzzeitig
+leer aussieht — das kann einen langsamen Erstmalig-Pull überholen und
+mittendrin abwürgen (aufgetreten beim PostgreSQL-18-Upgrade am
+25.08.2026). Erst explizit vorab pullen:
+
+```bash
+podman pull docker.io/library/postgres:<zielversion>
+systemctl --user start osa-backend-pg.service
+```
 
 ## Ablösung der Alt-Repos
 

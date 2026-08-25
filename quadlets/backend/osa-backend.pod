@@ -1,6 +1,6 @@
 [Unit]
-Wants=osa-backend.service
-Before=osa-backend.service
+Wants=osa-backend.service osa-backend-pg.service
+Before=osa-backend.service osa-backend-pg.service
 
 [Pod]
 PodName=osa-backend-pod
