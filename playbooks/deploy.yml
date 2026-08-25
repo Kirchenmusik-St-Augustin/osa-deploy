@@ -6,22 +6,24 @@
 # aus ghcr.io und werden vom bereits aktiven podman-auto-update.timer
 # automatisch eingespielt.
 #
-# Aufruf: ansible-playbook -i inventory/hosts.ini playbooks/deploy.yml --ask-vault-pass --check --diff
-#         ansible-playbook -i inventory/hosts.ini playbooks/deploy.yml --ask-vault-pass
+# Aufruf: ansible-playbook -i inventory/<stage>.ini playbooks/deploy.yml --ask-vault-pass --check --diff
+#         ansible-playbook -i inventory/<stage>.ini playbooks/deploy.yml --ask-vault-pass
+# <stage> ist eine der Dateien in inventory/ (production/test/qa).
 #
 # Sofort-Deploy statt auf den naechtlichen Auto-Update-Lauf zu warten:
-#   ansible-playbook ... --ask-vault-pass --tags deploy-backend
-#   ansible-playbook ... --ask-vault-pass --tags deploy-frontend
+#   ansible-playbook -i inventory/<stage>.ini ... --ask-vault-pass --tags deploy-backend
+#   ansible-playbook -i inventory/<stage>.ini ... --ask-vault-pass --tags deploy-frontend
 
 - name: Deploy/Sync auf dem P-System (einteilung.hochamt.at)
   hosts: vps
   remote_user: service
   gather_facts: yes
   vars:
-    local_secrets_path: "../secrets"
+    local_secrets_path: "../secrets/{{ app_environment }}"
     local_quadlets_path: "../quadlets"
+    local_templates_path: "../templates"
     local_timers_path: "../systemd-timers"
-    local_caddyfile_path: "../config/caddy/Caddyfile"
+    local_caddyfile_path: "../config/caddy/Caddyfile.j2"
 
     remote_env_dir: "{{ ansible_user_dir }}/.env"
     remote_quadlet_base: "{{ ansible_user_dir }}/.config/containers/systemd"
@@ -46,19 +48,34 @@
       - logging-dozzle.service
 
   tasks:
+    # "development" ist absichtlich NICHT in dieser Liste: lokale
+    # Entwicklung laeuft ueber den Vite-Dev-Server direkt auf der
+    # Dev-Maschine, nie ueber diesen Ansible-Flow -- auch wenn es einer der
+    # vier gueltigen APP_ENVIRONMENT-Werte im Backend selbst ist (siehe
+    # osa-backend/app/core/config.py's _VALID_ENVIRONMENTS).
+    - name: app_environment gegen die gueltigen Ansible-Deploy-Stages pruefen
+      tags: [always]
+      ansible.builtin.assert:
+        that:
+          - "app_environment in ['test', 'qa', 'production']"
+        fail_msg: >-
+          app_environment='{{ app_environment }}' ist ungueltig. Muss eines
+          von test/qa/production sein ("development" wird nie ueber
+          osa-deploy ausgerollt).
+
     - name: Verzeichnisstruktur anlegen
       tags: [always]
       loop:
         - "{{ remote_env_dir }}"
         - "{{ remote_quadlet_base }}"
         - "{{ remote_systemd_user_dir }}"
-        - "{{ ansible_user_dir }}/data/osa/einteilung.hochamt.at/postgres"
+        - "{{ ansible_user_dir }}/data/osa/{{ app_environment }}/postgres"
       ansible.builtin.file:
         path: "{{ item }}"
         state: directory
         mode: "0700"
 
-    - name: "*.env aus secrets/ finden"
+    - name: "*.env aus secrets/{{ app_environment }}/ finden (statisch)"
       tags: [always]
       delegate_to: localhost
       become: no
@@ -67,7 +84,7 @@
         patterns: "*.env"
       register: secret_files
 
-    - name: Secrets nach ~/.env kopieren
+    - name: Statische Secrets nach ~/.env kopieren
       tags: [always]
       no_log: true
       loop: "{{ secret_files.files }}"
@@ -76,6 +93,26 @@
       ansible.builtin.copy:
         src: "{{ item.path }}"
         dest: "{{ remote_env_dir }}/{{ item.path | basename }}"
+        mode: "0600"
+
+    - name: "*.env.j2 aus secrets/{{ app_environment }}/ finden (templated)"
+      tags: [always]
+      delegate_to: localhost
+      become: no
+      ansible.builtin.find:
+        paths: "{{ local_secrets_path }}"
+        patterns: "*.env.j2"
+      register: secret_templates
+
+    - name: Templated Secrets rendern + nach ~/.env kopieren
+      tags: [always]
+      no_log: true
+      loop: "{{ secret_templates.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+      ansible.builtin.template:
+        src: "{{ item.path }}"
+        dest: "{{ remote_env_dir }}/{{ item.path | basename | regex_replace('\\.j2$', '') }}"
         mode: "0600"
 
     - name: Quadlet-Verzeichnisse anlegen
@@ -98,11 +135,21 @@
         dest: "{{ remote_quadlet_base }}/{{ item.dest }}/"
         mode: "0644"
 
+    # Einziges Quadlet mit stage-abhaengigem Inhalt (Postgres-Datenpfad) --
+    # separat von der generischen Verzeichnis-Kopie oben, da es gerendert
+    # statt nur kopiert werden muss.
+    - name: "PostgreSQL-Quadlet rendern (Volume-Pfad ist stage-abhaengig)"
+      tags: [always]
+      ansible.builtin.template:
+        src: "{{ local_templates_path }}/osa-backend-pg.container.j2"
+        dest: "{{ remote_quadlet_base }}/osa/osa-backend/osa-backend-pg.container"
+        mode: "0644"
+
     # caddy.container's Volume-Mount erwartet die Caddyfile direkt neben
     # der Quadlet-Definition, siehe quadlets/caddy/caddy.container.
-    - name: Caddyfile kopieren
+    - name: Caddyfile rendern
       tags: [always]
-      ansible.builtin.copy:
+      ansible.builtin.template:
         src: "{{ local_caddyfile_path }}"
         dest: "{{ remote_quadlet_base }}/osa/infrastructure/caddy/Caddyfile"
         mode: "0644"

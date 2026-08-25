@@ -80,18 +80,38 @@ security boundary as the sister project `vb-fastapi-vue`/`vb-deploy`).
     `--check --diff`), needs `sudo`/`become`.
   - **`service`** — for `deploy.yml` (hardcoded as `remote_user: service`,
     no `sudo` needed).
-- A vault password for `secrets/*.env` (asked interactively, no
-  `vault_password_file` in the repo).
+- A vault password for `secrets/<stage>/*.env`/`*.env.j2` (asked
+  interactively, no `vault_password_file` in the repo).
+
+## Stages
+
+`inventory/` holds one file per stage this repo can actually deploy to —
+`production.ini`, `test.ini`, `qa.ini`. `osa-backend` has a fourth valid
+`APP_ENVIRONMENT` value, `development`, but that one is deliberately not an
+Ansible target here: local development runs against the Vite dev server
+directly on the dev machine, never through this repo. Every command below
+takes `-i inventory/<stage>.ini`; there is no default inventory, so a
+missing `-i` fails loudly instead of silently targeting the wrong stage.
+Only `production` is a real, currently deployed target — `test`/`qa` are
+placeholder skeletons (`CHANGEME.example.invalid`) until a dedicated VPS
+exists for them. Each
+stage's `inventory/<stage>.ini` also carries `backend_domain`,
+`frontend_domain`, and `shorturl_domain` — independent variables (backend
+and frontend don't have to share a domain, see `osa-backend`'s
+`samesite=none`/CSRF-origin-check cross-domain support), rendered into the
+Caddyfile and into `secrets/<stage>/*.env.j2` at deploy time. Each stage's
+Postgres data also lives under its own path, `~/data/osa/<stage>/postgres`
+on that stage's host.
 
 ## Phase 1 — VPS base configuration (only needed for a fresh setup)
 
 ```bash
-ansible-playbook -i inventory/hosts.ini playbooks/setup_vps.yml -u root
+ansible-playbook -i inventory/production.ini playbooks/setup_vps.yml -u root
 # If only password login is possible:
-ansible-playbook -i inventory/hosts.ini playbooks/setup_vps.yml -u root --ask-pass
+ansible-playbook -i inventory/production.ini playbooks/setup_vps.yml -u root --ask-pass
 
 # Re-run / verification (root login is disabled afterward):
-ansible-playbook -i inventory/hosts.ini playbooks/setup_vps.yml -u admin --ask-become-pass --check --diff
+ansible-playbook -i inventory/production.ini playbooks/setup_vps.yml -u admin --ask-become-pass --check --diff
 ```
 
 The real production host is already hardened via `osa/local-deployment`'s
@@ -102,8 +122,8 @@ install.
 ## Phase 2 — day-2 ops: keeping secrets/quadlets/timers in sync
 
 ```bash
-ansible-playbook -i inventory/hosts.ini playbooks/deploy.yml --ask-vault-pass --check --diff   # check first
-ansible-playbook -i inventory/hosts.ini playbooks/deploy.yml --ask-vault-pass                  # then apply
+ansible-playbook -i inventory/production.ini playbooks/deploy.yml --ask-vault-pass --check --diff   # check first
+ansible-playbook -i inventory/production.ini playbooks/deploy.yml --ask-vault-pass                  # then apply
 ```
 
 Syncs secrets, quadlet **definitions** (Caddy/Maintenance/Logging/Backend/
@@ -114,49 +134,53 @@ Dozzle). Builds no images, clones no repos, restores no database.
 ### Immediate deploy (instead of waiting for the nightly auto-update run)
 
 ```bash
-ansible-playbook -i inventory/hosts.ini playbooks/deploy.yml --ask-vault-pass --tags deploy-backend
-ansible-playbook -i inventory/hosts.ini playbooks/deploy.yml --ask-vault-pass --tags deploy-frontend
+ansible-playbook -i inventory/production.ini playbooks/deploy.yml --ask-vault-pass --tags deploy-backend
+ansible-playbook -i inventory/production.ini playbooks/deploy.yml --ask-vault-pass --tags deploy-frontend
 ```
 
 Pulls the current `:latest` image and restarts the corresponding pod.
 
 ## Maintaining secrets
 
-`secrets/caddy.env`, `secrets/osa-backend.env`, `secrets/osa-frontend.env`
-live `ansible-vault`-encrypted in the repo, never committed in plaintext.
-`secrets/*.env.example` are the (plaintext-safe) templates for them:
+`secrets/<stage>/caddy.env`, `secrets/<stage>/osa-backend.env.j2`,
+`secrets/<stage>/osa-frontend.env.j2` live `ansible-vault`-encrypted in the
+repo, never committed in plaintext. The two `.j2` files also contain Jinja2
+expressions (`{{ backend_domain }}` etc., filled in from
+`inventory/<stage>.ini`) alongside the real secrets — vault encryption and
+Jinja2 templating don't conflict: `ansible.builtin.template` decrypts the
+vault content first, then renders the Jinja2, so the edit workflow below is
+unchanged. `secrets/<stage>/*.example` are the (plaintext-safe) templates:
 
 ```bash
-cp secrets/osa-backend.env.example secrets/osa-backend.env
-$EDITOR secrets/osa-backend.env
-ansible-vault encrypt secrets/osa-backend.env
+cp secrets/production/osa-backend.env.j2.example secrets/production/osa-backend.env.j2
+$EDITOR secrets/production/osa-backend.env.j2
+ansible-vault encrypt secrets/production/osa-backend.env.j2
 
 # Edit later:
-ansible-vault edit secrets/osa-backend.env
-ansible-vault view secrets/osa-backend.env
+ansible-vault edit secrets/production/osa-backend.env.j2
+ansible-vault view secrets/production/osa-backend.env.j2
 ```
 
-`secrets/caddy.env` should reuse Legacy's/`osa-infrastructure`'s
+`secrets/<stage>/caddy.env` should reuse Legacy's/`osa-infrastructure`'s
 **already-existing** `LOGGING_USER`/`LOGGING_PASSWORD_HASH` values (don't
 regenerate) — the Dozzle login stays unaffected by the cutover.
-`secrets/osa-backend.env`'s `KOOFR_USER`/`KOOFR_PASSWORD` should reuse
-Legacy's existing Koofr account credentials, so `scripts/backup_db.py`/
-`restore_db.py` (see below) access the same backup history as
-`osa-einteilung.hochamt.at/tools/restore-koofr-backup.sh` -- though that
-script only recognizes backups created before 2026-08-13's stage-prefixed
-filename change (deliberate, accepted break, see `backup_service.py`'s
-module docstring).
+`osa-backend.env.j2`'s `KOOFR_USER`/`KOOFR_PASSWORD` are the **same across
+every stage** (one shared Koofr account/backup history) — copy verbatim
+from `secrets/production/osa-backend.env.j2` rather than generating new
+ones, so `scripts/backup_db.py`/`restore_db.py` (see below) always see the
+same backup history regardless of stage. `SMTP_*` should stay
+blank/commented on non-production stages (no mail sending outside prod).
 
-`secrets/osa-backend-pg.env` has no `.example` template (mirrors the
-sister project's `vb-api-pg.env`) — create it fresh with a freshly
-generated password, never reuse the dev one:
+`secrets/<stage>/osa-backend-pg.env` has no `.example` template (mirrors
+the sister project's `vb-api-pg.env`) — create it fresh per stage with a
+freshly generated password, never reuse another stage's:
 ```bash
-cat > secrets/osa-backend-pg.env <<'EOF'
+cat > secrets/production/osa-backend-pg.env <<'EOF'
 POSTGRES_USER=osa
 POSTGRES_PASSWORD=<paste output of: python3 -c "import secrets; print(secrets.token_urlsafe(32))">
 POSTGRES_DB=osa
 EOF
-ansible-vault encrypt secrets/osa-backend-pg.env
+ansible-vault encrypt secrets/production/osa-backend-pg.env
 ```
 
 ## Disaster recovery / database restore
@@ -183,6 +207,18 @@ A manual backup before risky changes:
 `podman exec osa-backend python scripts/backup_db.py`. Full docs for both
 scripts (all parameters incl. `--dry-run`/`--cleanup`) in
 [`osa-backend`'s README](../osa-backend/README.md).
+
+Starting `osa-backend-pg` against a brand-new, empty data directory (a
+fresh VPS setup, or a Postgres major-version bump) needs its image already
+present locally *before* the pod starts: Quadlet's pod-exit-policy default
+tears the pod down the moment it looks momentarily empty, which can race a
+slow first-time image pull and kill it mid-download (hit during the
+2026-08-25 PostgreSQL 18 upgrade). Pre-pull explicitly first:
+
+```bash
+podman pull docker.io/library/postgres:<target-version>
+systemctl --user start osa-backend-pg.service
+```
 
 ## Retiring the old repos
 
@@ -276,18 +312,39 @@ administrative Root-Aufgaben (`sudo`), er betreibt selbst keine Container
     `--check --diff`), braucht `sudo`/`become`.
   - **`service`** — für `deploy.yml` (fest als `remote_user: service`
     hinterlegt, kein `sudo` nötig).
-- Ein Vault-Passwort für `secrets/*.env` (wird interaktiv abgefragt, kein
-  `vault_password_file` im Repo).
+- Ein Vault-Passwort für `secrets/<stage>/*.env`/`*.env.j2` (wird interaktiv
+  abgefragt, kein `vault_password_file` im Repo).
+
+## Stages
+
+`inventory/` enthält eine Datei pro Stage, die dieses Repo tatsächlich
+deployen kann — `production.ini`, `test.ini`, `qa.ini`. `osa-backend` kennt
+mit `development` einen vierten gültigen `APP_ENVIRONMENT`-Wert, der aber
+bewusst kein Ansible-Ziel hier ist: lokale Entwicklung läuft direkt über
+den Vite-Dev-Server auf der Dev-Maschine, nie über dieses Repo. Jeder
+Befehl unten braucht `-i inventory/<stage>.ini`; es gibt kein
+Default-Inventory, ein fehlendes `-i` schlägt also laut fehl, statt still
+die falsche Stage zu treffen. Nur `production` ist ein reales, aktuell
+deployetes Ziel — `test`/`qa` sind Platzhalter-Skelette
+(`CHANGEME.example.invalid`), bis für sie ein eigener VPS existiert. Jede
+`inventory/<stage>.ini` trägt außerdem
+`backend_domain`, `frontend_domain` und `shorturl_domain` — unabhängige
+Variablen (Backend und Frontend müssen sich keine Domain teilen, siehe
+`osa-backend`s `samesite=none`/CSRF-Origin-Check-Unterstützung für
+Cross-Domain), die zur Deploy-Zeit ins Caddyfile und in
+`secrets/<stage>/*.env.j2` einfließen. Auch das Postgres-Datenverzeichnis
+jeder Stage liegt unter einem eigenen Pfad, `~/data/osa/<stage>/postgres`
+auf dem jeweiligen Host.
 
 ## Phase 1 — VPS-Grundkonfiguration (nur bei Neuaufsetzen nötig)
 
 ```bash
-ansible-playbook -i inventory/hosts.ini playbooks/setup_vps.yml -u root
+ansible-playbook -i inventory/production.ini playbooks/setup_vps.yml -u root
 # Falls nur Passwort-Login moeglich ist:
-ansible-playbook -i inventory/hosts.ini playbooks/setup_vps.yml -u root --ask-pass
+ansible-playbook -i inventory/production.ini playbooks/setup_vps.yml -u root --ask-pass
 
 # Re-Run / Verifikation (root-Login ist danach deaktiviert):
-ansible-playbook -i inventory/hosts.ini playbooks/setup_vps.yml -u admin --ask-become-pass --check --diff
+ansible-playbook -i inventory/production.ini playbooks/setup_vps.yml -u admin --ask-become-pass --check --diff
 ```
 
 Der reale Produktions-Host ist bereits über `osa/local-deployment`s fast
@@ -298,8 +355,8 @@ Neuinstallation.
 ## Phase 2 — Tag-2-Betrieb: Secrets/Quadlets/Timer synchron halten
 
 ```bash
-ansible-playbook -i inventory/hosts.ini playbooks/deploy.yml --ask-vault-pass --check --diff   # erst pruefen
-ansible-playbook -i inventory/hosts.ini playbooks/deploy.yml --ask-vault-pass                  # dann anwenden
+ansible-playbook -i inventory/production.ini playbooks/deploy.yml --ask-vault-pass --check --diff   # erst pruefen
+ansible-playbook -i inventory/production.ini playbooks/deploy.yml --ask-vault-pass                  # dann anwenden
 ```
 
 Synct Secrets, Quadlet-**Definitionen** (Caddy/Maintenance/Logging/Backend/
@@ -310,49 +367,55 @@ Dozzle). Baut keine Images, klont keine Repos, restored keine Datenbank.
 ### Sofort-Deploy (statt auf den nächtlichen Auto-Update-Lauf zu warten)
 
 ```bash
-ansible-playbook -i inventory/hosts.ini playbooks/deploy.yml --ask-vault-pass --tags deploy-backend
-ansible-playbook -i inventory/hosts.ini playbooks/deploy.yml --ask-vault-pass --tags deploy-frontend
+ansible-playbook -i inventory/production.ini playbooks/deploy.yml --ask-vault-pass --tags deploy-backend
+ansible-playbook -i inventory/production.ini playbooks/deploy.yml --ask-vault-pass --tags deploy-frontend
 ```
 
 Pullt das aktuelle `:latest`-Image und startet den zugehörigen Pod neu.
 
 ## Secrets pflegen
 
-`secrets/caddy.env`, `secrets/osa-backend.env`, `secrets/osa-frontend.env`
-liegen `ansible-vault`-verschlüsselt im Repo, nie im Klartext committet.
-`secrets/*.env.example` sind die (Klartext-sicheren) Vorlagen dafür:
+`secrets/<stage>/caddy.env`, `secrets/<stage>/osa-backend.env.j2`,
+`secrets/<stage>/osa-frontend.env.j2` liegen `ansible-vault`-verschlüsselt
+im Repo, nie im Klartext committet. Die beiden `.j2`-Dateien enthalten
+zusätzlich Jinja2-Ausdrücke (`{{ backend_domain }}` etc., befüllt aus
+`inventory/<stage>.ini`) neben den echten Secrets -- Vault-Verschlüsselung
+und Jinja2-Templating stehen sich nicht im Weg: `ansible.builtin.template`
+entschlüsselt den Vault-Inhalt zuerst, rendert danach das Jinja2, der
+Edit-Workflow unten bleibt also unverändert. `secrets/<stage>/*.example`
+sind die (Klartext-sicheren) Vorlagen:
 
 ```bash
-cp secrets/osa-backend.env.example secrets/osa-backend.env
-$EDITOR secrets/osa-backend.env
-ansible-vault encrypt secrets/osa-backend.env
+cp secrets/production/osa-backend.env.j2.example secrets/production/osa-backend.env.j2
+$EDITOR secrets/production/osa-backend.env.j2
+ansible-vault encrypt secrets/production/osa-backend.env.j2
 
 # Später bearbeiten:
-ansible-vault edit secrets/osa-backend.env
-ansible-vault view secrets/osa-backend.env
+ansible-vault edit secrets/production/osa-backend.env.j2
+ansible-vault view secrets/production/osa-backend.env.j2
 ```
 
-`secrets/caddy.env` sollte Legacys/`osa-infrastructure`s **bereits
+`secrets/<stage>/caddy.env` sollte Legacys/`osa-infrastructure`s **bereits
 bestehende** `LOGGING_USER`/`LOGGING_PASSWORD_HASH`-Werte übernehmen (nicht
 neu generieren) — der Dozzle-Login bleibt vom Cutover unberührt.
-`secrets/osa-backend.env`s `KOOFR_USER`/`KOOFR_PASSWORD` sollten Legacys
-bestehende Koofr-Kontodaten übernehmen, damit `scripts/backup_db.py`/
-`restore_db.py` (siehe unten) auf denselben Backup-Bestand zugreifen wie
-`osa-einteilung.hochamt.at/tools/restore-koofr-backup.sh` -- dieses Skript
-erkennt allerdings nur Backups von vor der Stage-Präfix-Namensumstellung
-vom 13.08.2026 (bewusster, akzeptierter Bruch, siehe Modul-Docstring von
-`backup_service.py`).
+`osa-backend.env.j2`s `KOOFR_USER`/`KOOFR_PASSWORD` sind **über alle Stages
+hinweg gleich** (ein gemeinsames Koofr-Konto/Backup-Bestand) — verbatim aus
+`secrets/production/osa-backend.env.j2` übernehmen statt neu zu generieren,
+damit `scripts/backup_db.py`/`restore_db.py` (siehe unten) stageunabhängig
+auf denselben Backup-Bestand zugreifen. `SMTP_*` sollte auf Non-Prod-Stages
+leer/auskommentiert bleiben (kein Mailversand außerhalb von Prod).
 
-`secrets/osa-backend-pg.env` hat keine `.example`-Vorlage (analog zu
-`vb-api-pg.env` im Schwesterprojekt) — frisch anlegen, mit einem neu
-generierten Passwort, niemals das Dev-Passwort wiederverwenden:
+`secrets/<stage>/osa-backend-pg.env` hat keine `.example`-Vorlage (analog
+zu `vb-api-pg.env` im Schwesterprojekt) — pro Stage frisch anlegen, mit
+einem neu generierten Passwort, niemals das einer anderen Stage
+wiederverwenden:
 ```bash
-cat > secrets/osa-backend-pg.env <<'EOF'
+cat > secrets/production/osa-backend-pg.env <<'EOF'
 POSTGRES_USER=osa
 POSTGRES_PASSWORD=<Ausgabe von: python3 -c "import secrets; print(secrets.token_urlsafe(32))">
 POSTGRES_DB=osa
 EOF
-ansible-vault encrypt secrets/osa-backend-pg.env
+ansible-vault encrypt secrets/production/osa-backend-pg.env
 ```
 
 ## Disaster Recovery / Datenbank-Restore
@@ -380,6 +443,19 @@ Ein manueller Backup vor riskanten Änderungen:
 `podman exec osa-backend python scripts/backup_db.py`. Volle Doku zu
 beiden Skripten (alle Parameter inkl. `--dry-run`/`--cleanup`) in
 [`osa-backend`s README](../osa-backend/README.md).
+
+`osa-backend-pg` gegen ein brandneues, leeres Datenverzeichnis zu starten
+(frisches VPS-Setup oder ein Postgres-Major-Version-Bump) braucht das
+zugehörige Image bereits lokal vorhanden, *bevor* der Pod startet:
+Quadlets Pod-Exit-Policy-Default reißt den Pod ab, sobald er kurzzeitig
+leer aussieht — das kann einen langsamen Erstmalig-Pull überholen und
+mittendrin abwürgen (aufgetreten beim PostgreSQL-18-Upgrade am
+25.08.2026). Erst explizit vorab pullen:
+
+```bash
+podman pull docker.io/library/postgres:<zielversion>
+systemctl --user start osa-backend-pg.service
+```
 
 ## Ablösung der Alt-Repos
 

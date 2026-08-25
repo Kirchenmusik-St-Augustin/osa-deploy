@@ -8,7 +8,7 @@ Image=docker.io/library/postgres:18
 AutoUpdate=registry
 
 EnvironmentFile=%h/.env/osa-backend-pg.env
-Volume=%h/data/osa/einteilung.hochamt.at/postgres:/var/lib/postgresql:Z
+Volume=%h/data/osa/{{ app_environment }}/postgres:/var/lib/postgresql:Z
 
 HealthCmd=pg_isready -U osa -d osa || exit 1
 HealthInterval=10s
