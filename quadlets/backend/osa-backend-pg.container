@@ -4,11 +4,11 @@ Description=PostgreSQL for OSA Backend (Prod)
 [Container]
 ContainerName=osa-backend-pg
 Pod=osa-backend.pod
-Image=docker.io/library/postgres:17
+Image=docker.io/library/postgres:18
 AutoUpdate=registry
 
 EnvironmentFile=%h/.env/osa-backend-pg.env
-Volume=%h/data/osa/einteilung.hochamt.at/postgres:/var/lib/postgresql/data:Z
+Volume=%h/data/osa/einteilung.hochamt.at/postgres:/var/lib/postgresql:Z
 
 HealthCmd=pg_isready -U osa -d osa || exit 1
 HealthInterval=10s
