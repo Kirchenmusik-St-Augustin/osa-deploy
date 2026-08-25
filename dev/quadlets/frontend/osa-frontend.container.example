@@ -1,0 +1,27 @@
+[Unit]
+Description=OSA Frontend (Dev)
+After=caddy.service
+
+[Container]
+ContainerName=osa-frontend
+Image=docker.io/library/node:24-slim
+PublishPort=127.0.0.1:21001:5173
+Volume=%h/projects/osa-fastapi-vue/osa-frontend:/app:Z
+UserNS=keep-id
+PodmanArgs=--workdir=/app
+Exec=npm run dev -- --host 0.0.0.0
+EnvironmentFile=%h/.env/osa-frontend.env
+
+HealthCmd=node -e 'const h=require("http");h.get("http://localhost:5173/",r=>{process.exit(r.statusCode===200?0:1)}).on("error",()=>process.exit(1))'
+HealthInterval=30s
+HealthTimeout=5s
+HealthRetries=3
+HealthStartPeriod=15s
+
+[Service]
+Restart=always
+RestartSec=5
+TimeoutStartSec=60
+
+[Install]
+WantedBy=default.target

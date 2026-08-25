@@ -1,0 +1,28 @@
+[Unit]
+Description=OSA Backend API (Dev)
+After=osa-backend-dev-build.service osa-backend-pg.service caddy.service
+Requires=osa-backend-dev-build.service
+
+[Container]
+ContainerName=osa-backend
+Pod=osa-backend.pod
+Image=osa-backend-dev.build
+# uvicorn's --reload file watcher doesn't reliably see change events over a
+# Podman bind mount without polling.
+Environment=WATCHFILES_FORCE_POLLING=true
+Volume=%h/projects/osa-fastapi-vue/osa-backend:/app:Z
+EnvironmentFile=%h/.env/osa-backend.env
+
+HealthCmd=python3 -c 'import urllib.request; urllib.request.urlopen("http://localhost:8000/")'
+HealthInterval=30s
+HealthTimeout=5s
+HealthRetries=3
+HealthStartPeriod=10s
+
+[Service]
+Restart=always
+RestartSec=5
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target
