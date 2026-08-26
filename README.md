@@ -75,6 +75,20 @@ administrative root tasks (`sudo`), it never runs containers itself.
     no `sudo` needed).
 - A vault password for `secrets/<stage>/*.env`/`*.env.j2` (asked
   interactively, no `vault_password_file` in the repo).
+- **DNS** for `backend_domain`/`frontend_domain`/`shorturl_domain` (see
+  "Stages" below) must already point to the target VPS before `deploy.yml`
+  (Phase 2) runs — not needed for Phase 1, which never touches Caddy.
+  Caddy provisions a TLS certificate from Let's Encrypt automatically for
+  every domain in the Caddyfile (see `config/caddy/Caddyfile.j2` — no
+  manual `tls` directive or certificate files anywhere), which means the
+  ACME challenge has to actually reach the VPS at that exact domain over
+  port 80 to prove ownership. If a domain doesn't resolve yet (or still
+  points at an old host), certificate issuance fails outright — the site
+  doesn't come up without HTTPS, it doesn't come up at all. Repeated
+  failed attempts against the same domain also count against Let's
+  Encrypt's own rate limits, so get DNS right *before* the first
+  `deploy.yml` run rather than debugging it against the live ACME
+  endpoint. Verify with `dig +short <domain>` first.
 
 ## Stages
 
@@ -109,6 +123,21 @@ See "Local development environment" below for the one stage this repo
 deliberately doesn't manage.
 
 ## Phase 1 — VPS base configuration (only needed for a fresh setup)
+
+Turns a bare host into a hardened, rootless-Podman-capable one:
+
+- Podman 5.x repo + package install (git, podman, netavark, firewall
+  tooling, ...)
+- creates the `admin` (sudo) and `service` (rootless Podman) users,
+  distributes your local SSH public key to both
+- rootless-Podman kernel/storage tuning
+- **reboots the host partway through** (finalizes kernel/Podman/sysctl
+  changes, deliberately before SSH gets hardened)
+- firewall lockdown to SSH/80/443 only
+- **disables root SSH login at the end**, and locks `admin` to key-only
+  login (password auth disabled for that user specifically)
+
+See `setup_vps.yml`'s own comments for the full task-by-task rationale.
 
 ```bash
 ansible-playbook -i inventory/production.ini playbooks/setup_vps.yml -u root
@@ -472,6 +501,22 @@ administrative Root-Aufgaben (`sudo`), er betreibt selbst keine Container.
     hinterlegt, kein `sudo` nötig).
 - Ein Vault-Passwort für `secrets/<stage>/*.env`/`*.env.j2` (wird interaktiv
   abgefragt, kein `vault_password_file` im Repo).
+- **DNS** für `backend_domain`/`frontend_domain`/`shorturl_domain` (siehe
+  "Stages" unten) muss bereits auf den Ziel-VPS zeigen, bevor `deploy.yml`
+  (Phase 2) läuft — für Phase 1 nicht nötig, die rührt Caddy gar nicht an.
+  Caddy besorgt sich für jede Domain im Caddyfile automatisch ein
+  TLS-Zertifikat von Let's Encrypt (siehe `config/caddy/Caddyfile.j2` —
+  nirgends eine manuelle `tls`-Direktive oder Zertifikatsdateien), das
+  heißt die ACME-Challenge muss den VPS tatsächlich unter genau dieser
+  Domain über Port 80 erreichen können, um die Inhaberschaft zu beweisen.
+  Löst eine Domain noch nicht auf (oder zeigt noch auf einen alten Host),
+  scheitert die Zertifikatserstellung komplett — die Seite kommt dann
+  nicht nur ohne HTTPS hoch, sie kommt gar nicht hoch. Wiederholte
+  fehlgeschlagene Versuche gegen dieselbe Domain zehren außerdem an Let's
+  Encrypts eigenen Rate-Limits, daher DNS lieber *vor* dem ersten
+  `deploy.yml`-Lauf richtig setzen, statt live gegen den
+  Produktions-ACME-Endpunkt zu debuggen. Vorab mit `dig +short <domain>`
+  prüfen.
 
 ## Stages
 
@@ -506,6 +551,23 @@ Siehe "Lokale Entwicklungsumgebung" unten für die eine Stage, die dieses
 Repo bewusst nicht verwaltet.
 
 ## Phase 1 — VPS-Grundkonfiguration (nur bei Neuaufsetzen nötig)
+
+Macht aus einem nackten Host ein gehärtetes, rootless-Podman-fähiges
+System:
+
+- Podman-5-Repo + Paketinstallation (git, podman, netavark,
+  Firewall-Tooling, ...)
+- legt die User `admin` (sudo) und `service` (rootless Podman) an,
+  verteilt den eigenen lokalen SSH-Public-Key an beide
+- rootless-Podman-Kernel-/Storage-Tuning
+- **startet den Host mittendrin neu** (finalisiert Kernel-/Podman-/
+  Sysctl-Änderungen, bewusst vor der SSH-Härtung)
+- Firewall-Lockdown auf nur noch SSH/80/443
+- **deaktiviert root-SSH-Login am Ende** und sperrt `admin` speziell auf
+  Key-only (Passwort-Login für diesen User gezielt deaktiviert)
+
+Die vollständige Task-für-Task-Begründung steht in `setup_vps.yml`s
+eigenen Kommentaren.
 
 ```bash
 ansible-playbook -i inventory/production.ini playbooks/setup_vps.yml -u root
