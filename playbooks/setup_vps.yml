@@ -8,9 +8,8 @@
 #
 # Dieses Playbook ist die Bus-Faktor-Absicherung fuer den Fall, dass der
 # Produktions-VPS komplett neu aufgesetzt werden muesste. Der Live-Host ist
-# bereits ueber osa/local-deployment's fast identisches Playbook gehaertet --
-# ein erster Lauf hier dient nur der Verifikation (--check --diff sollte
-# "keine Aenderung" melden), kein Routinebetrieb.
+# bereits gehaertet -- ein erster Lauf hier dient nur der Verifikation
+# (--check --diff sollte "keine Aenderung" melden), kein Routinebetrieb.
 
 - name: Grundkonfiguration eines neuen VPS
   hosts: all
