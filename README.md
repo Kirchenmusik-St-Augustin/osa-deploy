@@ -23,11 +23,14 @@ config and secrets and makes sure the right images are running.
 
 ## Architecture: rootless Podman on a VPS
 
-A single VPS carries all of production. Instead of classic root Docker
-containers, everything runs **rootless** under a dedicated, unprivileged
-Linux user named `service` — a compromised container can't escalate
-straight to host root. A second user `admin` exists only for
-administrative root tasks (`sudo`), it never runs containers itself.
+A single VPS carries all of production — by design, not by necessity: for
+this scale, it's the leanest operating model there is, with none of the
+overhead a cluster would add. Rootless Podman makes that possible without
+compromising on isolation: instead of classic root Docker containers,
+everything runs **rootless** under a dedicated, unprivileged Linux user
+named `service` — a compromised container can't escalate straight to host
+root. A second user `admin` exists only for administrative root tasks
+(`sudo`), it never runs containers itself.
 
 - **systemd Quadlets** instead of `docker-compose`: every container/pod is
   described as a `.container`/`.pod`/`.volume` file, which `systemd --user`
@@ -93,10 +96,11 @@ administrative root tasks (`sudo`), it never runs containers itself.
 ## Stages
 
 `inventory/` holds one file per stage this repo can actually deploy to —
-`production.ini`, `test.ini`, `qa.ini`. `osa-backend` has a fourth valid
-`APP_ENVIRONMENT` value, `development`, but that one is deliberately not an
-Ansible target here: local development runs against the Vite dev server
-directly on the dev machine, never through this repo. Every command below
+`production.ini`, `test.ini`, `qa.ini`. Both `osa-backend` and
+`osa-frontend` have a fourth valid `APP_ENVIRONMENT` value, `development`,
+but that one is deliberately not an Ansible target here: local development
+runs against the Vite dev server directly on the dev machine, never through
+this repo. Every command below
 takes `-i inventory/<stage>.ini`; there is no default inventory, so a
 missing `-i` fails loudly instead of silently targeting the wrong stage.
 Only `production` is a real, currently deployed target — `test`/`qa` are
@@ -244,12 +248,27 @@ scripts (all parameters incl. `--dry-run`/`--cleanup`) in
 
 ### Fresh or empty Postgres data directory
 
-Starting `osa-backend-pg` against a brand-new, empty data directory (a
-fresh VPS setup, or a Postgres major-version bump) needs its image already
-present locally *before* the pod starts: Quadlet's pod-exit-policy default
-tears the pod down the moment it looks momentarily empty, which can race a
-slow first-time image pull and kill it mid-download (hit during the
-2026-08-25 PostgreSQL 18 upgrade). Pre-pull explicitly first:
+This applies whenever `osa-backend-pg` is about to start against a data
+directory that doesn't have a Postgres cluster in it yet, i.e. `initdb`
+still has to run — two concrete cases:
+
+- **Standing up a stage for the first time** on a fresh VPS (see "Stages"
+  above for `test`/`qa`) — the data directory doesn't exist yet at all.
+- **A Postgres major-version bump** on a stage that's already running —
+  the old data directory gets moved aside first (a new major version
+  can't start against an old one's on-disk format), so the new version
+  starts against an empty directory too.
+
+In both cases, the image has to already be present locally *before*
+`systemctl --user start osa-backend-pg.service` runs, or the pod can die
+mid-startup: Quadlet's pod-exit-policy default tears the pod down the
+moment it looks "empty" (no container of `osa-backend-pod` actually
+running yet), and a first-time image pull that hasn't finished counts as
+exactly that — if a slow pull for `osa-backend-pg` is still in progress
+when the exit-policy check runs, it kills the pod mid-download instead of
+letting the pull finish, `osa-backend` container included. Pre-pulling the
+image explicitly removes that race entirely, since the pod then never
+observes an "empty" window:
 
 ```bash
 podman pull docker.io/library/postgres:<target-version>
@@ -373,9 +392,6 @@ podman exec -it osa-backend python scripts/restore_db.py
 (No `--force` needed — that flag only guards `APP_ENVIRONMENT=production`.)
 This needs working `KOOFR_USER`/`KOOFR_PASSWORD` in `~/.env/osa-backend.env`
 — ask whoever maintains production for these if you don't have them yet.
-Without Koofr access, there is currently no documented way to get a
-populated, login-capable dev database (see the note at the end of this
-section).
 
 Finally, `osa-frontend`'s Quadlet does not run `npm install` for you —
 `node_modules` lives inside the bind-mounted repo on the host, so it must
@@ -412,17 +428,6 @@ notes:
   SMTP-capturing tool you like, or leave both commented out — mail sending
   then just fails silently, same as every other non-production stage.
 
-### Open gap: no seed data without Koofr access
-
-This documents the environment as it actually works today, not as it
-"should" work: a new developer without Koofr credentials currently has no
-way to reach a login-capable dev database other than asking for those
-credentials. Given this is presently a one-person project, that is a
-reasonable state to document and move on from rather than build against
-speculatively — a minimal seed-user script would be a small, independent
-follow-up if/when a second developer actually needs one, not part of this
-change.
-
 ---
 
 # Deutsch
@@ -449,10 +454,13 @@ nur Config und Secrets und sorgt dafür, dass die richtigen Images laufen.
 
 ## Architektur: rootless Podman auf einem VPS
 
-Ein einzelner VPS trägt die gesamte Produktion. Statt klassischer Root-Docker-
-Container läuft alles **rootless** unter einem eigenen, unprivilegierten
-Linux-User namens `service` — ein kompromittierter Container kann so nicht
-direkt auf Host-Root eskalieren. Ein zweiter User `admin` existiert nur für
+Ein einzelner VPS trägt die gesamte Produktion — bewusst, nicht notgedrungen:
+Für diese Größenordnung ist er das schlankeste Betriebsmodell überhaupt,
+ganz ohne Cluster-Overhead. Rootless Podman macht das möglich, ohne bei der
+Isolation Kompromisse einzugehen: Statt klassischer Root-Docker-Container
+läuft alles **rootless** unter einem eigenen, unprivilegierten Linux-User
+namens `service` — ein kompromittierter Container kann so nicht direkt auf
+Host-Root eskalieren. Ein zweiter User `admin` existiert nur für
 administrative Root-Aufgaben (`sudo`), er betreibt selbst keine Container.
 
 - **systemd Quadlets** statt `docker-compose`: jeder Container/Pod wird als
@@ -521,10 +529,11 @@ administrative Root-Aufgaben (`sudo`), er betreibt selbst keine Container.
 ## Stages
 
 `inventory/` enthält eine Datei pro Stage, die dieses Repo tatsächlich
-deployen kann — `production.ini`, `test.ini`, `qa.ini`. `osa-backend` kennt
-mit `development` einen vierten gültigen `APP_ENVIRONMENT`-Wert, der aber
-bewusst kein Ansible-Ziel hier ist: lokale Entwicklung läuft direkt über
-den Vite-Dev-Server auf der Dev-Maschine, nie über dieses Repo. Jeder
+deployen kann — `production.ini`, `test.ini`, `qa.ini`. Sowohl
+`osa-backend` als auch `osa-frontend` kennen mit `development` einen
+vierten gültigen `APP_ENVIRONMENT`-Wert, der aber bewusst kein Ansible-Ziel
+hier ist: lokale Entwicklung läuft direkt über den Vite-Dev-Server auf der
+Dev-Maschine, nie über dieses Repo. Jeder
 Befehl unten braucht `-i inventory/<stage>.ini`; es gibt kein
 Default-Inventory, ein fehlendes `-i` schlägt also laut fehl, statt still
 die falsche Stage zu treffen. Nur `production` ist ein reales, aktuell
@@ -677,13 +686,29 @@ beiden Skripten (alle Parameter inkl. `--dry-run`/`--cleanup`) in
 
 ### Frisches oder leeres Postgres-Datenverzeichnis
 
-`osa-backend-pg` gegen ein brandneues, leeres Datenverzeichnis zu starten
-(frisches VPS-Setup oder ein Postgres-Major-Version-Bump) braucht das
-zugehörige Image bereits lokal vorhanden, *bevor* der Pod startet:
-Quadlets Pod-Exit-Policy-Default reißt den Pod ab, sobald er kurzzeitig
-leer aussieht — das kann einen langsamen Erstmalig-Pull überholen und
-mittendrin abwürgen (aufgetreten beim PostgreSQL-18-Upgrade am
-25.08.2026). Erst explizit vorab pullen:
+Das betrifft jeden Fall, in dem `osa-backend-pg` gegen ein Datenverzeichnis
+startet, das noch keinen Postgres-Cluster enthält, `initdb` also erst noch
+laufen muss — konkret zwei Situationen:
+
+- **Eine Stage wird erstmalig aufgesetzt**, auf einem frischen VPS (siehe
+  "Stages" oben für `test`/`qa`) — das Datenverzeichnis existiert dort
+  noch gar nicht.
+- **Ein Postgres-Major-Version-Bump** auf einer bereits laufenden Stage —
+  das alte Datenverzeichnis wird vorher beiseitegeschoben (eine neue
+  Major-Version kann nicht gegen das On-Disk-Format einer alten starten),
+  die neue Version startet also ebenfalls gegen ein leeres Verzeichnis.
+
+In beiden Fällen muss das Image bereits lokal vorhanden sein, *bevor*
+`systemctl --user start osa-backend-pg.service` läuft, sonst kann der Pod
+mitten im Start sterben: Quadlets Pod-Exit-Policy-Default reißt den Pod ab,
+sobald er "leer" aussieht (noch kein Container von `osa-backend-pod`
+tatsächlich läuft) — und ein noch nicht abgeschlossener Erstmalig-Pull
+zählt genau als das: Läuft ein langsamer Pull für `osa-backend-pg` noch,
+während die Exit-Policy-Prüfung greift, wird der Pod mittendrin
+abgewürgt statt den Pull fertig abzuwarten — inklusive des
+`osa-backend`-Containers. Das Image explizit vorab zu pullen entschärft
+dieses Rennen komplett, weil der Pod dann nie in diesen "leeren" Zustand
+gerät:
 
 ```bash
 podman pull docker.io/library/postgres:<zielversion>
@@ -853,15 +878,3 @@ bleiben; die vollständige Tier-1/2/3-Aufschlüsselung steht in
   SMTP-Capturing-Tool zeigen lassen, oder beide auskommentiert lassen —
   Mailversand schlägt dann einfach still fehl, wie auf jeder anderen
   Non-Production-Stage.
-
-### Offene Lücke: keine Seed-Daten ohne Koofr-Zugang
-
-Das dokumentiert die Umgebung, wie sie heute tatsächlich funktioniert,
-nicht wie sie "sein sollte": eine neue Entwickler:in ohne
-Koofr-Zugangsdaten hat aktuell keinen Weg zu einer login-fähigen
-Dev-Datenbank außer danach zu fragen. Da dies derzeit ein
-Ein-Personen-Projekt ist, ist das ein vertretbarer Zustand, den man
-dokumentiert und dabei belässt, statt spekulativ dagegen zu bauen — ein
-minimales Seed-User-Skript wäre ein kleiner, unabhängiger Folgeschritt,
-falls/wenn eine zweite Person das tatsächlich braucht, nicht Teil dieser
-Änderung.
