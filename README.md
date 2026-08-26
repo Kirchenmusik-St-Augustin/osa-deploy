@@ -23,11 +23,14 @@ config and secrets and makes sure the right images are running.
 
 ## Architecture: rootless Podman on a VPS
 
-A single VPS carries all of production. Instead of classic root Docker
-containers, everything runs **rootless** under a dedicated, unprivileged
-Linux user named `service` — a compromised container can't escalate
-straight to host root. A second user `admin` exists only for
-administrative root tasks (`sudo`), it never runs containers itself.
+A single VPS carries all of production — by design, not by necessity: for
+this scale, it's the leanest operating model there is, with none of the
+overhead a cluster would add. Rootless Podman makes that possible without
+compromising on isolation: instead of classic root Docker containers,
+everything runs **rootless** under a dedicated, unprivileged Linux user
+named `service` — a compromised container can't escalate straight to host
+root. A second user `admin` exists only for administrative root tasks
+(`sudo`), it never runs containers itself.
 
 - **systemd Quadlets** instead of `docker-compose`: every container/pod is
   described as a `.container`/`.pod`/`.volume` file, which `systemd --user`
@@ -451,10 +454,13 @@ nur Config und Secrets und sorgt dafür, dass die richtigen Images laufen.
 
 ## Architektur: rootless Podman auf einem VPS
 
-Ein einzelner VPS trägt die gesamte Produktion. Statt klassischer Root-Docker-
-Container läuft alles **rootless** unter einem eigenen, unprivilegierten
-Linux-User namens `service` — ein kompromittierter Container kann so nicht
-direkt auf Host-Root eskalieren. Ein zweiter User `admin` existiert nur für
+Ein einzelner VPS trägt die gesamte Produktion — bewusst, nicht notgedrungen:
+Für diese Größenordnung ist er das schlankeste Betriebsmodell überhaupt,
+ganz ohne Cluster-Overhead. Rootless Podman macht das möglich, ohne bei der
+Isolation Kompromisse einzugehen: Statt klassischer Root-Docker-Container
+läuft alles **rootless** unter einem eigenen, unprivilegierten Linux-User
+namens `service` — ein kompromittierter Container kann so nicht direkt auf
+Host-Root eskalieren. Ein zweiter User `admin` existiert nur für
 administrative Root-Aufgaben (`sudo`), er betreibt selbst keine Container.
 
 - **systemd Quadlets** statt `docker-compose`: jeder Container/Pod wird als
