@@ -163,6 +163,16 @@ fresh install.
 repo, never committed in plaintext. `secrets/<stage>/*.example` are the
 (plaintext-safe) templates.
 
+Every `secrets/<stage>/` directory carries the same four `.example`
+templates (`caddy.env.example`, `osa-backend-pg.env.example`,
+`osa-backend.env.j2.example`, `osa-frontend.env.j2.example`) regardless of
+whether that stage is deployed yet -- they hold no secrets, so there's no
+reason to withhold them. The four matching real, vault-encrypted files only
+get created once a stage has an actual target in `inventory/<stage>.ini`
+(not just a `CHANGEME.example.invalid` placeholder): `production` and any
+stage currently being stood up have all four; an unprovisioned stage has
+none yet.
+
 The two `.j2` files also contain Jinja2 expressions (`{{ backend_domain }}`
 etc., filled in from `inventory/<stage>.ini`) alongside the real secrets —
 vault encryption and Jinja2 templating don't conflict:
@@ -199,6 +209,41 @@ cp secrets/production/osa-backend-pg.env.example secrets/production/osa-backend-
 $EDITOR secrets/production/osa-backend-pg.env
 ansible-vault encrypt secrets/production/osa-backend-pg.env
 ```
+
+### Standing up test/qa: permanent stage vs. one-off smoke test
+
+Filling in `inventory/<stage>.ini` with a real host and creating that
+stage's real secrets (as above) means one of two things, and which one it
+is decides where that work gets committed:
+
+- **Permanent stage** — the box keeps serving as `test`/`qa` going forward
+  (its IP can still change later if it gets rebuilt). Commit
+  `inventory/<stage>.ini` and `secrets/<stage>/*` straight onto
+  `development`, exactly like `production`. Rebuilding the box later is a
+  config update (new IP, rotated secrets) done directly on `development`,
+  not a revert.
+- **One-off smoke test** — the box only exists to validate the deploy
+  tooling itself and gets torn down right after; the stage should read as
+  unprovisioned again afterward. Do this on a throwaway branch that never
+  merges into `development`, so the real host/domain and the
+  vault-encrypted secrets never enter `development`'s history at all:
+
+  ```bash
+  git checkout development && git pull
+  git checkout -b qa-smoketest-YYYY-MM-DD    # never push this branch
+
+  # fill in inventory/<stage>.ini + create/encrypt secrets/<stage>/* as above
+  git add inventory/qa.ini secrets/qa/
+  git commit -m "qa-smoketest: <what this validates>"
+
+  # deploy, verify, tear the VPS down again, then:
+  git checkout development
+  git branch -D qa-smoketest-YYYY-MM-DD      # gone, no trace in development
+  ```
+
+  `development`'s `inventory/<stage>.ini` stays at
+  `CHANGEME.example.invalid` and `secrets/<stage>/` keeps only its
+  `.example` templates throughout — there is nothing to revert there.
 
 ## Phase 2 — day-2 ops: keeping secrets/quadlets/timers in sync
 
@@ -598,6 +643,17 @@ zur Neuinstallation.
 im Repo, nie im Klartext committet. `secrets/<stage>/*.example` sind die
 (Klartext-sicheren) Vorlagen.
 
+Jedes `secrets/<stage>/`-Verzeichnis führt dieselben vier
+`.example`-Vorlagen (`caddy.env.example`, `osa-backend-pg.env.example`,
+`osa-backend.env.j2.example`, `osa-frontend.env.j2.example`), unabhängig
+davon, ob diese Stage schon deployt ist -- sie enthalten keine Secrets, es
+gibt also keinen Grund, sie vorzuenthalten. Die vier passenden echten,
+vault-verschlüsselten Dateien entstehen erst, sobald eine Stage ein
+tatsächliches Ziel in `inventory/<stage>.ini` hat (nicht nur einen
+`CHANGEME.example.invalid`-Platzhalter): `production` und jede gerade
+aufgesetzte Stage haben alle vier, eine noch nicht bereitgestellte Stage
+noch keine.
+
 Die beiden `.j2`-Dateien enthalten zusätzlich Jinja2-Ausdrücke
 (`{{ backend_domain }}` etc., befüllt aus `inventory/<stage>.ini`) neben
 den echten Secrets -- Vault-Verschlüsselung und Jinja2-Templating stehen
@@ -636,6 +692,42 @@ cp secrets/production/osa-backend-pg.env.example secrets/production/osa-backend-
 $EDITOR secrets/production/osa-backend-pg.env
 ansible-vault encrypt secrets/production/osa-backend-pg.env
 ```
+
+### test/qa aufsetzen: dauerhafte Stage vs. Wegwerf-Smoke-Test
+
+`inventory/<stage>.ini` mit einem echten Host zu befüllen und die echten
+Secrets dieser Stage anzulegen (siehe oben) bedeutet eines von zwei Dingen
+— und das entscheidet, wo dieser Stand committet wird:
+
+- **Dauerhafte Stage** — der Host bleibt dauerhaft `test`/`qa` (die IP darf
+  sich später bei einem Neuaufbau trotzdem ändern). `inventory/<stage>.ini`
+  und `secrets/<stage>/*` ganz normal auf `development` committen, genau
+  wie bei `production`. Ein späterer Neuaufbau des Hosts ist eine
+  Config-Änderung (neue IP, rotierte Secrets) direkt auf `development`,
+  kein Revert.
+- **Wegwerf-Smoke-Test** — der Host existiert nur, um die Deploy-Tools
+  selbst zu prüfen, und wird danach sofort wieder abgebaut; die Stage soll
+  anschließend wieder als unprovisioniert gelten. Das gehört auf einen
+  Wegwerf-Branch, der nie in `development` gemerged wird, damit der echte
+  Host/die Domain und die vault-verschlüsselten Secrets niemals in
+  `development`s History landen:
+
+  ```bash
+  git checkout development && git pull
+  git checkout -b qa-smoketest-YYYY-MM-DD    # diesen Branch nie pushen
+
+  # inventory/<stage>.ini befüllen + secrets/<stage>/* wie oben anlegen/verschlüsseln
+  git add inventory/qa.ini secrets/qa/
+  git commit -m "qa-smoketest: <was hier geprüft wird>"
+
+  # deployen, verifizieren, VPS wieder abbauen, dann:
+  git checkout development
+  git branch -D qa-smoketest-YYYY-MM-DD      # weg, keine Spur in development
+  ```
+
+  `development`s `inventory/<stage>.ini` bleibt dabei durchgehend auf
+  `CHANGEME.example.invalid`, `secrets/<stage>/` behält nur seine
+  `.example`-Vorlagen — dort gibt es nichts zu reverten.
 
 ## Phase 2 — Tag-2-Betrieb: Secrets/Quadlets/Timer synchron halten
 
