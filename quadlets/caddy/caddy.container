@@ -25,7 +25,7 @@ Mount=type=tmpfs,target=/tmp,tmpfs-mode=1777
 Mount=type=tmpfs,target=/run,tmpfs-mode=1777
 
 # --- VOLUMES ---
-Volume=%E/osa/infrastructure/caddy/Caddyfile:/etc/caddy/Caddyfile:ro,z
+Volume=%h/.config/containers/systemd/osa/infrastructure/caddy/Caddyfile:/etc/caddy/Caddyfile:ro,z
 
 # Die restlichen Daten wandern in die Named Volumes
 Volume=caddy-data.volume:/data

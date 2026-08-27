@@ -18,6 +18,14 @@
   hosts: vps
   remote_user: service
   gather_facts: yes
+  # Explicit vars_files instead of inventory/group_vars/: an
+  # automatically-loaded group variable applies to EVERY play that
+  # targets this host -- including setup_vps.yml (hosts: all), which
+  # never references koofr_user/koofr_password at all. vars_files scopes
+  # the file to this one play instead, so only a deploy.yml run needs a
+  # vault password for it.
+  vars_files:
+    - ../secrets/shared/koofr.yml
   vars:
     local_secrets_path: "../secrets/{{ app_environment }}"
     local_quadlets_path: "../quadlets"
@@ -180,6 +188,14 @@
         state: started
       environment:
         XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+      # A stage's very first deploy: --check never actually writes the
+      # Quadlet files above, so systemd-generator never produces these
+      # units at all yet -- querying their current state genuinely fails,
+      # not just "would change". ignore_errors here only ever applies
+      # under --check (a real apply still fails hard on a real problem);
+      # on an already-deployed host the units exist and this task
+      # succeeds normally, so this never hides a real diff there.
+      ignore_errors: "{{ ansible_check_mode }}"
 
     - name: Caddy neu starten, falls sich die Caddyfile geändert hat
       tags: [always]
@@ -190,6 +206,9 @@
         state: restarted
       environment:
         XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+      # Same first-deploy reasoning as the task above -- caddy.service
+      # doesn't exist yet either on a --check run against a brand-new host.
+      ignore_errors: "{{ ansible_check_mode }}"
 
     # ------------------------------------------------------------------
     # Sofort-Deploy (nur bei explizitem --tags) -- pullt das aktuelle
