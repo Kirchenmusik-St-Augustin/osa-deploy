@@ -11,8 +11,8 @@ configuration, Podman Quadlets, and (vault-encrypted) secrets.
 
 | Repo | What | Tech stack | Deployed as |
 |---|---|---|---|
-| [`osa-backend`](../osa-backend) | Backend: scheduling/casting management for church musicians | Python 3.12, FastAPI, SQLAlchemy, PostgreSQL | `osa-backend` pod |
-| [`osa-frontend`](../osa-frontend) | Frontend to `osa-backend`: Vue 3 SPA | Vue 3 (`<script setup>`, TypeScript), Vite, nginx | `osa-frontend` pod |
+| [`osa-backend`](https://github.com/Kirchenmusik-St-Augustin/osa-backend) | Backend: scheduling/casting management for church musicians | Python 3.12, FastAPI, SQLAlchemy, PostgreSQL | `osa-backend` pod |
+| [`osa-frontend`](https://github.com/Kirchenmusik-St-Augustin/osa-frontend) | Frontend to `osa-backend`: Vue 3 SPA | Vue 3 (`<script setup>`, TypeScript), Vite, nginx | `osa-frontend` pod |
 | `osa-deploy` (this repo) | Ops: Ansible, Caddy, Quadlets, Secrets | Ansible, systemd Quadlets | doesn't run itself — configures the others |
 
 Both app repos build their own container image via CI/CD (GitHub Actions)
@@ -344,7 +344,7 @@ production's real data without anyone triggering it by hand. See
 A manual backup before risky changes:
 `podman exec osa-backend python scripts/backup_db.py`. Full docs for both
 scripts (all parameters incl. `--dry-run`/`--cleanup`) in
-[`osa-backend`'s README](../osa-backend/README.md).
+[`osa-backend`'s README](https://github.com/Kirchenmusik-St-Augustin/osa-backend).
 
 ### Fresh or empty Postgres data directory
 
@@ -407,7 +407,11 @@ working machine.
 
 None of the placeholders below are prescriptive: pick any domain you like
 for local development and substitute it for `<your-dev-domain>` everywhere
-it appears. Nothing in `dev/` hardcodes one specific domain.
+it appears. `<your-shorturl-domain>` is a second, independent placeholder
+— often just "go." plus your main dev domain, but not necessarily, exactly
+like production's own `shorturl_domain` isn't derived from
+`backend_domain`/`frontend_domain` either (see "Stages" above). Nothing in
+`dev/` hardcodes one specific domain.
 
 ### Directory layout
 
@@ -442,7 +446,7 @@ suffix), `chmod 600` the env files, then reload systemd and start
 everything:
 
 ```bash
-mkdir -p ~/.config/containers/systemd/osa/osa-backend ~/.config/containers/systemd/osa/osa-frontend ~/.env
+mkdir -p ~/.config/containers/systemd/osa/osa-backend ~/.config/containers/systemd/osa/osa-frontend ~/.env ~/data/osa-backend/postgres
 
 for f in dev/quadlets/backend/*.example; do
   cp "$f" ~/.config/containers/systemd/osa/osa-backend/"$(basename "${f%.example}")"
@@ -456,9 +460,15 @@ done
 chmod 600 ~/.env/osa-backend.env ~/.env/osa-backend-pg.env ~/.env/osa-frontend.env
 ```
 
+`~/data/osa-backend/postgres` is `osa-backend-pg.container.example`'s bind
+mount target — Podman does not create a missing host directory for a bind
+mount, it fails outright (`Error: statfs ...: no such file or directory`)
+if it's absent.
+
 Edit each `~/.env/*.env` file next: fill in `<your-dev-domain>`,
-`SECRET_KEY`, `POSTGRES_PASSWORD`, `DATABASE_URL`'s password, and
-optionally `GOOGLE_CLIENT_ID`/`KOOFR_USER`/`KOOFR_PASSWORD`. Then:
+`<your-shorturl-domain>`, `SECRET_KEY`, `POSTGRES_PASSWORD`,
+`DATABASE_URL`'s password, and optionally
+`GOOGLE_CLIENT_ID`/`KOOFR_USER`/`KOOFR_PASSWORD`. Then:
 
 ```bash
 systemctl --user daemon-reload
@@ -478,15 +488,16 @@ Your host's Caddy (not containerized)
    ├─ /api, /api/*     → 127.0.0.1:21000 → osa-backend (uvicorn --reload)
    └─ everything else  → 127.0.0.1:21001 → osa-frontend (Vite dev server)
 Your host's Caddy
-   └─ go.<your-dev-domain> (optional, short-URL testing)
+   └─ <your-shorturl-domain> (optional, short-URL testing)
         └─ /*  → 127.0.0.1:21000 (with /go prefix) → osa-backend
 ```
 
 Append `dev/Caddyfile.dev.example`'s two vhost blocks to your own Caddyfile
 (location depends on how Caddy is installed on your machine — see Caddy's
 own docs for the default path on your platform), replace
-`<your-dev-domain>`, then reload Caddy. The `go.<your-dev-domain>` vhost is
-optional, only needed for local short-URL redirect testing.
+`<your-dev-domain>`/`<your-shorturl-domain>`, then reload Caddy. The
+`<your-shorturl-domain>` vhost is optional, only needed for local
+short-URL redirect testing.
 
 ### First start: build, migrate, get a working login
 
@@ -534,9 +545,17 @@ backup scheduling, `BACKUP_*`) are safe to leave unset on dev; see
 `osa-backend`'s README for the full Tier 1/2/3 breakdown. A few dev-only
 notes:
 
-- `DATABASE_URL`'s port must match whichever host port
-  `osa-backend.pod.example` publishes Postgres on (`5433` by default —
-  adjust if `5432` is already bound by another project on your dev host).
+- `DATABASE_URL`/`TEST_DATABASE_URL` use port `5432` — `osa-backend` reaches
+  Postgres over the pod's shared network namespace, on Postgres' own
+  container-internal port, not on `osa-backend.pod.example`'s
+  host-published port (`5433` by default). Nothing in the running stack
+  actually needs that host port; it exists purely as an optional
+  convenience for manual `psql` debugging directly from the dev host
+  itself (loopback-only, same purpose as production's equivalent port —
+  never reachable from outside the machine). Adjust it in
+  `osa-backend.pod.example` if `5432` is already bound by another project
+  and you want to keep that debugging option open; leave it as-is
+  otherwise.
 - `VITE_API_BASE_URL` is a full absolute URL, not the relative `/api` the
   app otherwise recommends — the Vite dev server itself doesn't do the
   `/api` path split, only your own Caddy in front of it does. A different
@@ -564,8 +583,8 @@ Podman-Quadlets und (vault-verschlüsselte) Secrets.
 
 | Repo | Was | Tech-Stack | Wird deployt als |
 |---|---|---|---|
-| [`osa-backend`](../osa-backend) | Backend: Dienstplan-/Besetzungsverwaltung für Kirchenmusiker | Python 3.12, FastAPI, SQLAlchemy, PostgreSQL | `osa-backend`-Pod |
-| [`osa-frontend`](../osa-frontend) | Frontend zu `osa-backend`: Vue-3-SPA | Vue 3 (`<script setup>`, TypeScript), Vite, nginx | `osa-frontend`-Pod |
+| [`osa-backend`](https://github.com/Kirchenmusik-St-Augustin/osa-backend) | Backend: Dienstplan-/Besetzungsverwaltung für Kirchenmusiker | Python 3.12, FastAPI, SQLAlchemy, PostgreSQL | `osa-backend`-Pod |
+| [`osa-frontend`](https://github.com/Kirchenmusik-St-Augustin/osa-frontend) | Frontend zu `osa-backend`: Vue-3-SPA | Vue 3 (`<script setup>`, TypeScript), Vite, nginx | `osa-frontend`-Pod |
 | `osa-deploy` (dieses Repo) | Betrieb: Ansible, Caddy, Quadlets, Secrets | Ansible, systemd Quadlets | läuft nicht selbst als Service — konfiguriert die anderen |
 
 Beide App-Repos bauen ihr Container-Image selbst per CI/CD (GitHub Actions)
@@ -911,7 +930,7 @@ README.
 Ein manueller Backup vor riskanten Änderungen:
 `podman exec osa-backend python scripts/backup_db.py`. Volle Doku zu
 beiden Skripten (alle Parameter inkl. `--dry-run`/`--cleanup`) in
-[`osa-backend`s README](../osa-backend/README.md).
+[`osa-backend`s README](https://github.com/Kirchenmusik-St-Augustin/osa-backend).
 
 ### Frisches oder leeres Postgres-Datenverzeichnis
 
@@ -979,7 +998,11 @@ muss.
 
 Keiner der Platzhalter unten ist verbindlich vorgegeben: wählt für lokale
 Entwicklung eine beliebige Domain und ersetzt `<your-dev-domain>` überall,
-wo sie auftaucht. Nichts unter `dev/` hardcoded eine bestimmte Domain.
+wo sie auftaucht. `<your-shorturl-domain>` ist ein zweiter, unabhängiger
+Platzhalter — oft einfach "go." plus eurer Haupt-Dev-Domain, aber nicht
+zwingend, genau wie Productions eigene `shorturl_domain` auch nicht von
+`backend_domain`/`frontend_domain` abgeleitet ist (siehe "Stages" oben).
+Nichts unter `dev/` hardcoded eine bestimmte Domain.
 
 ### Verzeichnisstruktur
 
@@ -1016,7 +1039,7 @@ weglassen), die Env-Dateien `chmod 600`, dann systemd neu laden und alles
 starten:
 
 ```bash
-mkdir -p ~/.config/containers/systemd/osa/osa-backend ~/.config/containers/systemd/osa/osa-frontend ~/.env
+mkdir -p ~/.config/containers/systemd/osa/osa-backend ~/.config/containers/systemd/osa/osa-frontend ~/.env ~/data/osa-backend/postgres
 
 for f in dev/quadlets/backend/*.example; do
   cp "$f" ~/.config/containers/systemd/osa/osa-backend/"$(basename "${f%.example}")"
@@ -1030,9 +1053,15 @@ done
 chmod 600 ~/.env/osa-backend.env ~/.env/osa-backend-pg.env ~/.env/osa-frontend.env
 ```
 
+`~/data/osa-backend/postgres` ist `osa-backend-pg.container.example`s
+Bind-Mount-Ziel — Podman legt ein fehlendes Host-Verzeichnis für einen
+Bind-Mount nicht selbst an, sondern scheitert hart
+(`Error: statfs ...: no such file or directory`), wenn es fehlt.
+
 Danach jede `~/.env/*.env`-Datei bearbeiten: `<your-dev-domain>`,
-`SECRET_KEY`, `POSTGRES_PASSWORD`, das Passwort in `DATABASE_URL` sowie
-optional `GOOGLE_CLIENT_ID`/`KOOFR_USER`/`KOOFR_PASSWORD` eintragen. Dann:
+`<your-shorturl-domain>`, `SECRET_KEY`, `POSTGRES_PASSWORD`, das Passwort
+in `DATABASE_URL` sowie optional
+`GOOGLE_CLIENT_ID`/`KOOFR_USER`/`KOOFR_PASSWORD` eintragen. Dann:
 
 ```bash
 systemctl --user daemon-reload
@@ -1052,16 +1081,16 @@ Euer Host-Caddy (nicht containerisiert)
    ├─ /api, /api/*     → 127.0.0.1:21000 → osa-backend (uvicorn --reload)
    └─ alles andere     → 127.0.0.1:21001 → osa-frontend (Vite-Dev-Server)
 Euer Host-Caddy
-   └─ go.<your-dev-domain> (optional, zum Testen von Kurz-URLs)
+   └─ <your-shorturl-domain> (optional, zum Testen von Kurz-URLs)
         └─ /*  → 127.0.0.1:21000 (mit /go-Präfix) → osa-backend
 ```
 
 Die beiden Vhost-Blöcke aus `dev/Caddyfile.dev.example` in die eigene
 Caddyfile einfügen (Speicherort abhängig davon, wie Caddy auf eurer
 Maschine installiert ist — siehe Caddys eigene Doku für den Default-Pfad
-auf eurer Plattform), `<your-dev-domain>` ersetzen, dann Caddy neu laden.
-Der `go.<your-dev-domain>`-Vhost ist optional, nur nötig, um Kurz-URL-
-Redirects lokal zu testen.
+auf eurer Plattform), `<your-dev-domain>`/`<your-shorturl-domain>`
+ersetzen, dann Caddy neu laden. Der `<your-shorturl-domain>`-Vhost ist
+optional, nur nötig, um Kurz-URL-Redirects lokal zu testen.
 
 ### Erster Start: Build, Migration, funktionierender Login
 
@@ -1113,10 +1142,17 @@ Laufzeiten, Koofr-Backup-Zeitplan, `BACKUP_*`), können auf Dev unbelegt
 bleiben; die vollständige Tier-1/2/3-Aufschlüsselung steht in
 `osa-backend`s README. Ein paar Dev-spezifische Hinweise:
 
-- Der Port in `DATABASE_URL` muss zu dem Host-Port passen, den
-  `osa-backend.pod.example` für Postgres veröffentlicht (`5433` per
-  Default — anpassen, falls `5432` auf eurem Dev-Host schon von einem
-  anderen Projekt belegt ist).
+- `DATABASE_URL`/`TEST_DATABASE_URL` nutzen Port `5432` — `osa-backend`
+  erreicht Postgres über den gemeinsamen Pod-Netzwerk-Namespace, auf
+  Postgres' eigenem containerinternem Port, nicht über den von
+  `osa-backend.pod.example` nach außen veröffentlichten Host-Port (`5433`
+  per Default). Der laufende Stack selbst braucht diesen Host-Port gar
+  nicht — er existiert rein als optionale Komfortfunktion für manuelles
+  `psql`-Debugging direkt vom Dev-Host aus (nur Loopback, derselbe Zweck
+  wie der äquivalente Port in Produktion — nie von außerhalb der Maschine
+  erreichbar). In `osa-backend.pod.example` anpassen, falls `5432` schon
+  von einem anderen Projekt belegt ist und diese Debug-Option erhalten
+  bleiben soll; sonst unverändert lassen.
 - `VITE_API_BASE_URL` ist eine vollständige absolute URL, nicht das
   relative `/api`, das die App sonst empfiehlt — der Vite-Dev-Server
   selbst macht den `/api`-Pfad-Split nicht, das übernimmt nur das eigene
