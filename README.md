@@ -120,8 +120,11 @@ on that stage's host.
 the repo, no copy step needed. Replace the `[vps]` entry with the new
 host's IP or hostname (whatever `ssh` can already reach), and replace all
 three `CHANGEME.example.invalid` values under `[vps:vars]` with that
-stage's real `backend_domain`/`frontend_domain`/`shorturl_domain`. Nothing
-else needs to change before Phase 1 below can run against it.
+stage's real `backend_domain`/`frontend_domain`/`shorturl_domain` -- while
+you're in there, also update or remove the file's own top-of-file
+"PLACEHOLDER, no real VPS exists yet" comment, or it'll keep claiming that
+after you've filled in a real, working stage. Nothing else needs to change
+before Phase 1 below can run against it.
 
 See "Local development environment" below for the one stage this repo
 deliberately doesn't manage.
@@ -130,8 +133,12 @@ deliberately doesn't manage.
 
 Turns a bare host into a hardened, rootless-Podman-capable one:
 
-- Podman 5.x repo + package install (git, podman, netavark, firewall
-  tooling, ...)
+- full upgrade + native package install (git, podman, netavark, firewall
+  tooling, ...) straight from the distribution's own repository — no
+  third-party repository added
+- **checks the installed Podman major version and aborts with a clear
+  error if it's too old** (see "Supported distributions" below) — before
+  anything else runs
 - creates the `admin` (sudo) and `service` (rootless Podman) users,
   distributes your local SSH public key to both
 - rootless-Podman kernel/storage tuning
@@ -142,6 +149,34 @@ Turns a bare host into a hardened, rootless-Podman-capable one:
   login (password auth disabled for that user specifically)
 
 See `setup_vps.yml`'s own comments for the full task-by-task rationale.
+
+### Supported distributions
+
+This playbook requires **Podman major version 5 or newer**, installed
+from each distribution's own default repository — not a third-party one.
+Podman 5.0 is a hard technical requirement, not a preference: Quadlet's
+`.pod` unit type (used by every pod in this repo, e.g.
+`quadlets/backend/osa-backend.pod`) only exists from Podman 5.0 onward.
+`setup_vps.yml`'s version-check task aborts cleanly — before any
+destructive step (reboot, firewall, SSH hardening) runs — if the target's
+native repository ships anything older, rather than silently patching the
+gap with a third-party repository of unknown long-term trustworthiness.
+
+Known-good release branches (native Podman version verified 2026-08-27,
+drifts over time — patch versions shown are a snapshot, what actually
+matters is the major-version gate the playbook enforces at runtime):
+
+| Distribution | Native Podman |
+| --- | --- |
+| Debian 13 ("trixie") | 5.4.2 |
+| Ubuntu 26.04 LTS | 5.7.0 |
+| Rocky Linux / AlmaLinux / CentOS Stream 10 | 5.6.0+ |
+| Fedora (current stable) | 5.8.x |
+| openSUSE Leap 16.0 | 5.4.2 |
+
+Known-too-old release branches — reinstall a current one instead of
+running this playbook against these: Debian 12, Ubuntu 24.04 LTS (native
+4.9.3), any RHEL-family 9.x release, openSUSE Leap 15.x.
 
 ```bash
 ansible-playbook -i inventory/production.ini playbooks/setup_vps.yml -u root
@@ -159,9 +194,9 @@ fresh install.
 ## Maintaining secrets
 
 `secrets/<stage>/caddy.env`, `secrets/<stage>/osa-backend.env.j2`,
-`secrets/<stage>/osa-frontend.env.j2` live `ansible-vault`-encrypted in the
-repo, never committed in plaintext. `secrets/<stage>/*.example` are the
-(plaintext-safe) templates.
+`secrets/<stage>/osa-frontend.env.j2`, and `secrets/shared/koofr.yml` live
+`ansible-vault`-encrypted in the repo, never committed in plaintext. The
+matching `*.example` files are the (plaintext-safe) templates.
 
 Every `secrets/<stage>/` directory carries the same four `.example`
 templates (`caddy.env.example`, `osa-backend-pg.env.example`,
@@ -180,13 +215,13 @@ vault encryption and Jinja2 templating don't conflict:
 the Jinja2, so the edit workflow below is unchanged:
 
 ```bash
-cp secrets/production/osa-backend.env.j2.example secrets/production/osa-backend.env.j2
-$EDITOR secrets/production/osa-backend.env.j2
-ansible-vault encrypt secrets/production/osa-backend.env.j2
+cp secrets/<stage>/osa-backend.env.j2.example secrets/<stage>/osa-backend.env.j2
+$EDITOR secrets/<stage>/osa-backend.env.j2
+ansible-vault encrypt secrets/<stage>/osa-backend.env.j2
 
 # Edit later:
-ansible-vault edit secrets/production/osa-backend.env.j2
-ansible-vault view secrets/production/osa-backend.env.j2
+ansible-vault edit secrets/<stage>/osa-backend.env.j2
+ansible-vault view secrets/<stage>/osa-backend.env.j2
 ```
 
 `secrets/<stage>/caddy.env`'s `LOGGING_USER`/`LOGGING_PASSWORD_HASH` follow
@@ -194,20 +229,29 @@ the same rule as `osa-backend-pg.env` below — generate a fresh password per
 stage, never reuse another stage's, so a leaked non-production Dozzle login
 can't double as a production one.
 `osa-backend.env.j2`'s `KOOFR_USER`/`KOOFR_PASSWORD` are the **same across
-every stage** (one shared Koofr account/backup history) — copy verbatim
-from `secrets/production/osa-backend.env.j2` rather than generating new
-ones, so `scripts/backup_db.py`/`restore_db.py` (see "Disaster recovery"
-below) always see the same backup history regardless of stage. `SMTP_*`
-should stay blank/commented on non-production stages (no mail sending
-outside prod).
+every stage** (one shared Koofr account/backup history), so they aren't
+duplicated into each stage's file at all: `secrets/shared/koofr.yml`
+defines `koofr_user`/`koofr_password` once, and every stage's
+`osa-backend.env.j2` just references `{{ koofr_user }}`/`{{ koofr_password }}`
+— `playbooks/deploy.yml`'s play loads it explicitly via `vars_files:`, so
+nothing needs filling in per stage. Rotating the Koofr password is a
+single edit:
+```bash
+ansible-vault edit secrets/shared/koofr.yml
+```
+`scripts/backup_db.py`/`restore_db.py` (see "Disaster recovery" below)
+always see the same backup history regardless of stage. `SMTP_*` should stay
+commented out on non-production stages (no mail sending outside prod) --
+`SMTP_PORT` is int-typed, so a blank value fails startup validation; only a
+commented-out key counts as unset.
 
 `secrets/<stage>/osa-backend-pg.env` follows the same `.example` workflow
 as the two `.j2` files above — create it fresh per stage with a freshly
 generated password, never reuse another stage's:
 ```bash
-cp secrets/production/osa-backend-pg.env.example secrets/production/osa-backend-pg.env
-$EDITOR secrets/production/osa-backend-pg.env
-ansible-vault encrypt secrets/production/osa-backend-pg.env
+cp secrets/<stage>/osa-backend-pg.env.example secrets/<stage>/osa-backend-pg.env
+$EDITOR secrets/<stage>/osa-backend-pg.env
+ansible-vault encrypt secrets/<stage>/osa-backend-pg.env
 ```
 
 ### Standing up test/qa: permanent stage vs. one-off smoke test
@@ -255,7 +299,11 @@ ansible-playbook -i inventory/production.ini playbooks/deploy.yml --ask-vault-pa
 Syncs secrets, quadlet **definitions** (Caddy/Maintenance/Logging/Backend/
 Frontend), the Caddyfile itself, and the maintenance timer; starts and
 keeps running the entire stack (Caddy + Backend + Frontend + Maintenance +
-Dozzle). Builds no images, clones no repos, restores no database.
+Dozzle). Builds no images, clones no repos, restores no database. On a
+freshly stood-up stage (see "Standing up test/qa" above), that means the
+database is empty right after this — see "Fresh or empty Postgres data
+directory" below for the one extra step that gets you a working, populated
+system instead of an empty login screen.
 
 ### Immediate deploy (instead of waiting for the nightly auto-update run)
 
@@ -285,6 +333,13 @@ podman exec -it osa-backend python scripts/restore_db.py --force
 `APP_ENVIRONMENT=production` by default (protection against accidentally
 overwriting the live database). Always verify afterward that real data
 actually landed, not just that the command exited cleanly.
+
+`osa-backend`'s own scheduler additionally runs this restore **automatically,
+every night, on every non-production stage** (the `downsync` job — one hour
+after production's nightly backup, always pulling the latest production
+backup, never the other way around) so `test`/`qa` naturally stay close to
+production's real data without anyone triggering it by hand. See
+`osa-backend`'s README for the scheduler's full job list and timing.
 
 A manual backup before risky changes:
 `podman exec osa-backend python scripts/backup_db.py`. Full docs for both
@@ -319,6 +374,26 @@ observes an "empty" window:
 podman pull docker.io/library/postgres:<target-version>
 systemctl --user start osa-backend-pg.service
 ```
+
+Either way, the database that comes up is schema-migrated but **empty** —
+alembic creates the tables, it doesn't seed any rows. On a non-production
+stage, get a working system with real data by pulling down the latest
+production backup (auto-selects it without `--backup-name`, no `--force`
+needed — that flag only guards `APP_ENVIRONMENT=production`):
+
+```bash
+ssh service@<stage-host>
+podman exec -it osa-backend python scripts/restore_db.py
+```
+
+This is the same thing the nightly `downsync` scheduled job already does
+automatically on every non-production stage (see "Disaster recovery"
+below) — triggering it manually here just avoids waiting for that nightly
+run right after standing up a stage. (On production itself, an empty
+directory only happens via the major-version-bump case above; recover it
+with `restore_db.py --force` from the backup taken right before the bump,
+same as any other production restore under "Disaster recovery" — a
+downsync only ever pulls *from* production, never restores *into* it.)
 
 ## Local development environment
 
@@ -436,7 +511,9 @@ podman exec -it osa-backend python scripts/restore_db.py
 
 (No `--force` needed — that flag only guards `APP_ENVIRONMENT=production`.)
 This needs working `KOOFR_USER`/`KOOFR_PASSWORD` in `~/.env/osa-backend.env`
-— ask whoever maintains production for these if you don't have them yet.
+— retrieve the shared value with
+`ansible-vault view secrets/shared/koofr.yml` (vault password needed) if
+you don't have it yet.
 
 Finally, `osa-frontend`'s Quadlet does not run `npm install` for you —
 `node_modules` lives inside the bind-mounted repo on the host, so it must
@@ -598,8 +675,12 @@ Pfad, `~/data/osa/<stage>/postgres` auf dem jeweiligen Host.
 Repo, kein Kopierschritt nötig. Den `[vps]`-Eintrag durch den neuen Host
 ersetzen (IP oder Hostname, alles, was `ssh` bereits erreicht), und alle
 drei `CHANGEME.example.invalid`-Werte unter `[vps:vars]` durch die echten
-`backend_domain`/`frontend_domain`/`shorturl_domain` dieser Stage ersetzen.
-Mehr muss nicht angepasst werden, bevor Phase 1 unten dagegen laufen kann.
+`backend_domain`/`frontend_domain`/`shorturl_domain` dieser Stage ersetzen —
+dabei auch gleich den Platzhalter-Kommentar am Dateianfang ("PLACEHOLDER,
+kein echter VPS vorhanden") aktualisieren oder entfernen, sonst behauptet
+er das auch nach dem Befüllen mit einer echten, funktionierenden Stage
+weiter. Mehr muss nicht angepasst werden, bevor Phase 1 unten dagegen
+laufen kann.
 
 Siehe "Lokale Entwicklungsumgebung" unten für die eine Stage, die dieses
 Repo bewusst nicht verwaltet.
@@ -609,8 +690,12 @@ Repo bewusst nicht verwaltet.
 Macht aus einem nackten Host ein gehärtetes, rootless-Podman-fähiges
 System:
 
-- Podman-5-Repo + Paketinstallation (git, podman, netavark,
-  Firewall-Tooling, ...)
+- Vollupgrade + native Paketinstallation (git, podman, netavark,
+  Firewall-Tooling, ...) direkt aus dem eigenen Repository der Distribution
+  — kein Drittanbieter-Repo wird eingerichtet
+- **prüft die installierte Podman-Major-Version und bricht bei einer zu
+  alten Version mit klarer Fehlermeldung ab** (siehe "Unterstützte
+  Distributionen" unten) — bevor irgendetwas anderes läuft
 - legt die User `admin` (sudo) und `service` (rootless Podman) an,
   verteilt den eigenen lokalen SSH-Public-Key an beide
 - rootless-Podman-Kernel-/Storage-Tuning
@@ -622,6 +707,36 @@ System:
 
 Die vollständige Task-für-Task-Begründung steht in `setup_vps.yml`s
 eigenen Kommentaren.
+
+### Unterstützte Distributionen
+
+Dieses Playbook braucht mindestens **Podman-Major-Version 5**, installiert
+aus dem jeweils eigenen Standard-Repository der Distribution — nicht aus
+einem Drittanbieter-Repo. Podman 5.0 ist eine echte technische
+Voraussetzung, keine bloße Präferenz: Quadlets `.pod`-Unit-Typ (den jeder
+Pod in diesem Repo nutzt, z.B. `quadlets/backend/osa-backend.pod`) gibt es
+erst ab Podman 5.0. `setup_vps.yml`s Versions-Check-Task bricht sauber ab
+— bevor irgendein destruktiver Schritt (Reboot, Firewall, SSH-Härtung)
+läuft — falls das native Repository des Ziels etwas Älteres liefert,
+statt die Lücke still mit einem Drittanbieter-Repo unbekannter
+Vertrauenswürdigkeit zu stopfen.
+
+Bekannt gute Release-Zweige (native Podman-Version verifiziert am
+27.08.2026, ändert sich mit der Zeit — die gezeigten Patch-Versionen sind
+eine Momentaufnahme, entscheidend ist allein die Major-Version-Prüfung,
+die das Playbook zur Laufzeit durchführt):
+
+| Distribution | Native Podman-Version |
+| --- | --- |
+| Debian 13 ("trixie") | 5.4.2 |
+| Ubuntu 26.04 LTS | 5.7.0 |
+| Rocky Linux / AlmaLinux / CentOS Stream 10 | 5.6.0+ |
+| Fedora (aktuelles Stable-Release) | 5.8.x |
+| openSUSE Leap 16.0 | 5.4.2 |
+
+Bekannt zu alte Release-Zweige — vor dem Einsatz dieses Playbooks lieber
+neu aufsetzen statt gegen diese laufen zu lassen: Debian 12, Ubuntu 24.04
+LTS (nativ 4.9.3), jedes RHEL-Familie-9.x-Release, openSUSE Leap 15.x.
 
 ```bash
 ansible-playbook -i inventory/production.ini playbooks/setup_vps.yml -u root
@@ -639,9 +754,9 @@ zur Neuinstallation.
 ## Secrets pflegen
 
 `secrets/<stage>/caddy.env`, `secrets/<stage>/osa-backend.env.j2`,
-`secrets/<stage>/osa-frontend.env.j2` liegen `ansible-vault`-verschlüsselt
-im Repo, nie im Klartext committet. `secrets/<stage>/*.example` sind die
-(Klartext-sicheren) Vorlagen.
+`secrets/<stage>/osa-frontend.env.j2` und `secrets/shared/koofr.yml` liegen
+`ansible-vault`-verschlüsselt im Repo, nie im Klartext committet. Die
+passenden `*.example`-Dateien sind die (Klartext-sicheren) Vorlagen.
 
 Jedes `secrets/<stage>/`-Verzeichnis führt dieselben vier
 `.example`-Vorlagen (`caddy.env.example`, `osa-backend-pg.env.example`,
@@ -662,13 +777,13 @@ Vault-Inhalt zuerst, rendert danach das Jinja2, der Edit-Workflow unten
 bleibt also unverändert:
 
 ```bash
-cp secrets/production/osa-backend.env.j2.example secrets/production/osa-backend.env.j2
-$EDITOR secrets/production/osa-backend.env.j2
-ansible-vault encrypt secrets/production/osa-backend.env.j2
+cp secrets/<stage>/osa-backend.env.j2.example secrets/<stage>/osa-backend.env.j2
+$EDITOR secrets/<stage>/osa-backend.env.j2
+ansible-vault encrypt secrets/<stage>/osa-backend.env.j2
 
 # Später bearbeiten:
-ansible-vault edit secrets/production/osa-backend.env.j2
-ansible-vault view secrets/production/osa-backend.env.j2
+ansible-vault edit secrets/<stage>/osa-backend.env.j2
+ansible-vault view secrets/<stage>/osa-backend.env.j2
 ```
 
 `secrets/<stage>/caddy.env`s `LOGGING_USER`/`LOGGING_PASSWORD_HASH` folgen
@@ -677,20 +792,29 @@ Passwort generieren, niemals das einer anderen Stage wiederverwenden, damit
 ein geleakter Nicht-Produktions-Dozzle-Login nicht auch als
 Produktions-Login funktioniert.
 `osa-backend.env.j2`s `KOOFR_USER`/`KOOFR_PASSWORD` sind **über alle Stages
-hinweg gleich** (ein gemeinsames Koofr-Konto/Backup-Bestand) — verbatim aus
-`secrets/production/osa-backend.env.j2` übernehmen statt neu zu generieren,
-damit `scripts/backup_db.py`/`restore_db.py` (siehe "Disaster Recovery"
-unten) stageunabhängig auf denselben Backup-Bestand zugreifen. `SMTP_*`
-sollte auf Non-Prod-Stages leer/auskommentiert bleiben (kein Mailversand
-außerhalb von Prod).
+hinweg gleich** (ein gemeinsames Koofr-Konto/Backup-Bestand), stehen deshalb
+gar nicht mehr dupliziert in jeder Stage-Datei: `secrets/shared/koofr.yml`
+definiert `koofr_user`/`koofr_password` genau einmal, jede Stage-Datei
+referenziert nur noch `{{ koofr_user }}`/`{{ koofr_password }}` —
+`playbooks/deploy.yml`s Play lädt sie explizit per `vars_files:`, es muss
+also pro Stage nichts mehr ausgefüllt werden. Eine Passwort-Rotation ist
+damit ein einziger Edit:
+```bash
+ansible-vault edit secrets/shared/koofr.yml
+```
+`scripts/backup_db.py`/`restore_db.py` (siehe "Disaster Recovery" unten)
+greifen so stageunabhängig auf denselben Backup-Bestand zu. `SMTP_*` sollte
+auf Non-Prod-Stages auskommentiert bleiben (kein Mailversand außerhalb von
+Prod) — `SMTP_PORT` ist int-typisiert, ein leerer Wert scheitert beim Start
+an der Validierung; nur ein auskommentierter Schlüssel zählt als unset.
 
 `secrets/<stage>/osa-backend-pg.env` folgt demselben `.example`-Workflow
 wie die beiden `.j2`-Dateien oben — pro Stage frisch anlegen, mit einem neu
 generierten Passwort, niemals das einer anderen Stage wiederverwenden:
 ```bash
-cp secrets/production/osa-backend-pg.env.example secrets/production/osa-backend-pg.env
-$EDITOR secrets/production/osa-backend-pg.env
-ansible-vault encrypt secrets/production/osa-backend-pg.env
+cp secrets/<stage>/osa-backend-pg.env.example secrets/<stage>/osa-backend-pg.env
+$EDITOR secrets/<stage>/osa-backend-pg.env
+ansible-vault encrypt secrets/<stage>/osa-backend-pg.env
 ```
 
 ### test/qa aufsetzen: dauerhafte Stage vs. Wegwerf-Smoke-Test
@@ -740,6 +864,11 @@ Synct Secrets, Quadlet-**Definitionen** (Caddy/Maintenance/Logging/Backend/
 Frontend), die Caddyfile selbst und den Maintenance-Timer; startet und hält
 den kompletten Stack am Laufen (Caddy + Backend + Frontend + Maintenance +
 Dozzle). Baut keine Images, klont keine Repos, restored keine Datenbank.
+Bei einer frisch aufgesetzten Stage (siehe "test/qa aufsetzen" oben)
+bedeutet das: die Datenbank ist danach leer — siehe "Frisches oder leeres
+Postgres-Datenverzeichnis" unten für den einen zusätzlichen Schritt, der
+statt eines leeren Login-Screens ein funktionierendes, befülltes System
+liefert.
 
 ### Sofort-Deploy (statt auf den nächtlichen Auto-Update-Lauf zu warten)
 
@@ -770,6 +899,14 @@ podman exec -it osa-backend python scripts/restore_db.py --force
 versehentlichem Überschreiben der Live-Datenbank). Danach immer
 verifizieren, dass wirklich echte Daten da sind, nicht nur, dass der Befehl
 fehlerfrei durchlief.
+
+`osa-backend`s eigener Scheduler führt diesen Restore zusätzlich
+**automatisch, jede Nacht, auf jeder Nicht-Production-Stage** aus (der
+`downsync`-Job — eine Stunde nach dem nächtlichen Production-Backup, zieht
+immer das neueste Production-Backup, nie umgekehrt), damit `test`/`qa` ganz
+von selbst nah an den echten Production-Daten bleiben, ohne dass das jemand
+manuell anstoßen muss. Volle Job-Liste und Zeitplan in `osa-backend`s
+README.
 
 Ein manueller Backup vor riskanten Änderungen:
 `podman exec osa-backend python scripts/backup_db.py`. Volle Doku zu
@@ -806,6 +943,28 @@ gerät:
 podman pull docker.io/library/postgres:<zielversion>
 systemctl --user start osa-backend-pg.service
 ```
+
+So oder so kommt die Datenbank danach schema-migriert, aber **leer** hoch —
+alembic legt die Tabellen an, befüllt aber keine Zeile. Auf einer
+Nicht-Production-Stage kommt man mit dem letzten Production-Backup zu einem
+funktionierenden System mit echten Daten (wählt es ohne `--backup-name`
+automatisch aus, `--force` ist nicht nötig — das Flag schützt nur
+`APP_ENVIRONMENT=production`):
+
+```bash
+ssh service@<stage-host>
+podman exec -it osa-backend python scripts/restore_db.py
+```
+
+Das ist genau das, was der nächtliche `downsync`-Scheduled-Job ohnehin
+automatisch auf jeder Nicht-Production-Stage macht (siehe "Disaster
+Recovery" oben) — der manuelle Trigger hier erspart nur das Warten auf
+diesen nächtlichen Lauf direkt nach dem Aufsetzen einer Stage. (Auf
+Production selbst tritt ein leeres Verzeichnis nur beim
+Major-Version-Bump-Fall oben auf; dort mit `restore_db.py --force` aus dem
+Backup unmittelbar vor dem Bump wiederherstellen, wie jeder andere
+Production-Restore unter "Disaster Recovery" — ein Downsync zieht immer nur
+*von* Production, restored aber nie *in* Production.)
 
 ## Lokale Entwicklungsumgebung
 
@@ -928,10 +1087,11 @@ podman exec -it osa-backend python scripts/restore_db.py
 
 (Kein `--force` nötig — das Flag schützt nur `APP_ENVIRONMENT=production`.)
 Dafür werden funktionierende `KOOFR_USER`/`KOOFR_PASSWORD` in
-`~/.env/osa-backend.env` gebraucht — wer immer Produktion betreut, danach
-fragen, falls noch nicht vorhanden. Ohne Koofr-Zugang gibt es aktuell
-keinen dokumentierten Weg zu einer befüllten, login-fähigen Dev-Datenbank
-(siehe Anmerkung am Ende dieses Abschnitts).
+`~/.env/osa-backend.env` gebraucht — den gemeinsamen Wert mit
+`ansible-vault view secrets/shared/koofr.yml` abrufen (Vault-Passwort
+nötig), falls noch nicht vorhanden. Ohne Koofr-Zugang gibt
+es aktuell keinen dokumentierten Weg zu einer befüllten, login-fähigen
+Dev-Datenbank (siehe Anmerkung am Ende dieses Abschnitts).
 
 Zuletzt: `osa-frontend`s Quadlet führt kein `npm install` für euch aus —
 `node_modules` liegt innerhalb des gemounteten Repos auf dem Host, muss
