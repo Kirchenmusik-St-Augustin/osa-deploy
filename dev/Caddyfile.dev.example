@@ -1,7 +1,10 @@
 # Local-dev Caddy vhosts for OSA -- append to your own host-wide Caddyfile
 # (not containerized/Ansible-managed in dev, see this repo's README).
 # Replace <your-dev-domain> with whatever domain you point at this
-# machine.
+# machine, and <your-shorturl-domain> below with your shorturl domain --
+# the two are independent, not one derived from the other (matching
+# production's own backend_domain/frontend_domain/shorturl_domain split,
+# see "Stages" above).
 
 <your-dev-domain> {
 	handle_path /api {
@@ -17,7 +20,7 @@
 
 # Optional -- only needed if you also want to test short-URL redirects
 # locally.
-go.<your-dev-domain> {
+<your-shorturl-domain> {
 	rewrite * /go{uri}
 	reverse_proxy 127.0.0.1:21000
 }
