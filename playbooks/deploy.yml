@@ -83,6 +83,29 @@
         state: directory
         mode: "0700"
 
+    # Rootless-Podman UID mapping: a freshly created directory belongs to
+    # the calling user's own UID in the default namespace, but the
+    # official postgres image's entrypoint runs as UID 999 inside its own
+    # namespace - without this fix, initdb fails on the very first start
+    # with a permission error. Both commands must run under
+    # "podman unshare", not a plain chown/chmod - afterwards the directory
+    # belongs to the mapped UID, and the calling user itself can no longer
+    # read it directly from outside a "podman unshare" shell. A no-op on
+    # already-initialized directories (chown/chmod are idempotent).
+    - name: PostgreSQL-Datenverzeichnis-Ownership sicherstellen (Rootless-Mapping)
+      tags: [always]
+      ansible.builtin.command: >-
+        podman unshare chown -R 999:999
+        {{ ansible_user_dir }}/data/osa/{{ app_environment }}/postgres
+      changed_when: false
+
+    - name: PostgreSQL-Datenverzeichnis-Berechtigungen sicherstellen
+      tags: [always]
+      ansible.builtin.command: >-
+        podman unshare chmod 700
+        {{ ansible_user_dir }}/data/osa/{{ app_environment }}/postgres
+      changed_when: false
+
     - name: "*.env aus secrets/{{ app_environment }}/ finden (statisch)"
       tags: [always]
       delegate_to: localhost

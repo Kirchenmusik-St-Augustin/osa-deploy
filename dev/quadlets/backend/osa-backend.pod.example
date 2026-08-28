@@ -13,8 +13,12 @@ PublishPort=127.0.0.1:5433:5432
 # SMTP-capturing tool you use, or delete the line entirely -- mail sending
 # is optional on dev (see SMTP_HOST/SMTP_PORT in osa-backend.env.example).
 # AddHost=mail.<your-dev-domain>:host-gateway
-# Dev doesn't need the explicit uid=1000,gid=1000 mapping production's
-# UserNS uses -- there's no cross-machine UID mismatch to bridge here.
+# The backend container bind-mounts the source tree directly from the
+# host for hot-reload (see osa-backend.container.example) -- without
+# keep-id, rootless Podman's default namespace mapping would put the
+# container's "app" user (uid=1000, see Dockerfile) on an arbitrary
+# subuid instead of onto this host's calling user, and it could no
+# longer read/write the mounted source files.
 UserNS=keep-id
 # Dev also doesn't need production's IPv4-only pasta workaround (see
 # quadlets/backend/osa-backend.pod in this repo) -- default bridge
