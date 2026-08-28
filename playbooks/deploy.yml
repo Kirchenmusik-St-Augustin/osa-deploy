@@ -83,6 +83,29 @@
         state: directory
         mode: "0700"
 
+    # Rootless-Podman UID mapping: a freshly created directory belongs to
+    # the calling user's own UID in the default namespace, but the
+    # official postgres image's entrypoint runs as UID 999 inside its own
+    # namespace - without this fix, initdb fails on the very first start
+    # with a permission error. Both commands must run under
+    # "podman unshare", not a plain chown/chmod - afterwards the directory
+    # belongs to the mapped UID, and the calling user itself can no longer
+    # read it directly from outside a "podman unshare" shell. A no-op on
+    # already-initialized directories (chown/chmod are idempotent).
+    - name: PostgreSQL-Datenverzeichnis-Ownership sicherstellen (Rootless-Mapping)
+      tags: [always]
+      ansible.builtin.command: >-
+        podman unshare chown -R 999:999
+        {{ ansible_user_dir }}/data/osa/{{ app_environment }}/postgres
+      changed_when: false
+
+    - name: PostgreSQL-Datenverzeichnis-Berechtigungen sicherstellen
+      tags: [always]
+      ansible.builtin.command: >-
+        podman unshare chmod 700
+        {{ ansible_user_dir }}/data/osa/{{ app_environment }}/postgres
+      changed_when: false
+
     - name: "*.env aus secrets/{{ app_environment }}/ finden (statisch)"
       tags: [always]
       delegate_to: localhost
@@ -133,15 +156,30 @@
         state: directory
         mode: "0755"
 
+    # Caddy is excluded from this list (its own task right below, with its
+    # own register) -- the restart trigger further down must also react to
+    # changes in the quadlet definition itself, not only to changes in the
+    # Caddyfile.
     - name: Quadlet-Dateien kopieren
       tags: [always]
-      loop: "{{ quadlet_targets }}"
+      loop: "{{ quadlet_targets | rejectattr('src', 'equalto', 'caddy') | list }}"
       loop_control:
         label: "{{ item.dest }}"
       ansible.builtin.copy:
         src: "{{ local_quadlets_path }}/{{ item.src }}/"
         dest: "{{ remote_quadlet_base }}/{{ item.dest }}/"
         mode: "0644"
+
+    # Kept separate from the generic copy above so a change to the quadlet
+    # definition itself (e.g. its volume mount) triggers the same Caddy
+    # restart as a change to the Caddyfile.
+    - name: Caddy-Quadlet-Dateien kopieren
+      tags: [always]
+      ansible.builtin.copy:
+        src: "{{ local_quadlets_path }}/caddy/"
+        dest: "{{ remote_quadlet_base }}/osa/infrastructure/caddy/"
+        mode: "0644"
+      register: caddy_quadlet_copy
 
     # Einziges Quadlet mit stage-abhaengigem Inhalt (Postgres-Datenpfad) --
     # separat von der generischen Verzeichnis-Kopie oben, da es gerendert
@@ -197,9 +235,9 @@
       # succeeds normally, so this never hides a real diff there.
       ignore_errors: "{{ ansible_check_mode }}"
 
-    - name: Caddy neu starten, falls sich die Caddyfile geändert hat
+    - name: Caddy neu starten, falls sich die Caddyfile oder das Quadlet geändert hat
       tags: [always]
-      when: caddyfile_copy.changed
+      when: caddyfile_copy.changed or caddy_quadlet_copy.changed
       ansible.builtin.systemd:
         scope: user
         name: caddy.service
