@@ -564,7 +564,12 @@ notes:
   distinction, not repeated here).
 - `TEST_DATABASE_URL` is dev/test-only, consumed by `osa-backend`'s pytest
   suite (`podman exec osa-backend pytest ...`, see `osa-backend`'s README)
-  — not part of production's env template at all.
+  — not part of production's env template at all. Its database (`osa_test`
+  by default) is a separate database on the same Postgres server, not just
+  a separate table set — create it once before the first test run:
+  `podman exec osa-backend-pg psql -U osa -d osa -c "CREATE DATABASE osa_test OWNER osa;"`
+  (schema/tables come from `osa-backend`'s own test suite running the real
+  Alembic migrations on first use, no separate migration step needed here).
 - SMTP is optional. Point `SMTP_HOST`/`SMTP_PORT` at any local
   SMTP-capturing tool you like, or leave both commented out — mail sending
   then just fails silently, same as every other non-production stage.
@@ -1161,7 +1166,14 @@ bleiben; die vollständige Tier-1/2/3-Aufschlüsselung steht in
   `VITE_*`-vs.-Runtime-Config-Unterscheidung, hier nicht wiederholt).
 - `TEST_DATABASE_URL` ist nur für Dev/Test, genutzt von `osa-backend`s
   Pytest-Suite (`podman exec osa-backend pytest ...`, siehe
-  `osa-backend`s README) — in der Produktions-Env-Vorlage gar nicht enthalten.
+  `osa-backend`s README) — in der Produktions-Env-Vorlage gar nicht
+  enthalten. Ihre Datenbank (per Default `osa_test`) ist eine eigene
+  Datenbank auf demselben Postgres-Server, nicht nur ein eigener
+  Tabellensatz — vor dem ersten Testlauf einmalig anlegen:
+  `podman exec osa-backend-pg psql -U osa -d osa -c "CREATE DATABASE osa_test OWNER osa;"`
+  (Schema/Tabellen kommen von `osa-backend`s eigener Test-Suite, die beim
+  ersten Gebrauch die echten Alembic-Migrationen ausführt, kein separater
+  Migrationsschritt nötig).
 - SMTP ist optional. `SMTP_HOST`/`SMTP_PORT` auf ein beliebiges lokales
   SMTP-Capturing-Tool zeigen lassen, oder beide auskommentiert lassen —
   Mailversand schlägt dann einfach still fehl, wie auf jeder anderen
