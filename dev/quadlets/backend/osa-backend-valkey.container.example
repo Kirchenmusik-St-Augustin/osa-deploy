@@ -1,0 +1,27 @@
+[Unit]
+Description=Valkey Queue Backend for OSA Backend ARQ Worker (Dev)
+
+[Container]
+ContainerName=osa-backend-valkey
+Pod=osa-backend.pod
+Image=docker.io/valkey/valkey:8-alpine
+AutoUpdate=registry
+EnvironmentFile=%h/.env/osa-backend-valkey.env
+Volume=%h/data/osa-backend/valkey:/data:Z
+# See quadlets/valkey's production template for why this needs the sh -c
+# wrapper (Quadlet's Exec= doesn't expand env vars) and why that's fine
+# without any extra ownership-fix step here too.
+Exec=sh -c 'exec valkey-server --requirepass "$VALKEY_PASSWORD" --appendonly yes'
+
+HealthCmd=valkey-cli -a "$VALKEY_PASSWORD" --no-auth-warning ping || exit 1
+HealthInterval=10s
+HealthTimeout=5s
+HealthStartPeriod=10s
+HealthRetries=3
+
+[Service]
+Restart=always
+TimeoutStartSec=60
+
+[Install]
+WantedBy=default.target

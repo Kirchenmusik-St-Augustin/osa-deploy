@@ -35,9 +35,10 @@ root. A second user `admin` exists only for administrative root tasks
 - **systemd Quadlets** instead of `docker-compose`: every container/pod is
   described as a `.container`/`.pod`/`.volume` file, which `systemd --user`
   translates into a real systemd service automatically.
-- **Two pods for the app:** `osa-backend-pod` (the backend container plus
-  an `osa-backend-pg` PostgreSQL sidecar) and `osa-frontend-pod` (nginx) —
-  the only stack running.
+- **Two pods for the app:** `osa-backend-pod` (the backend container, an
+  `osa-backend-pg` PostgreSQL sidecar, an `osa-backend-valkey` queue
+  sidecar, and an `osa-backend-worker` container running the arq job
+  worker) and `osa-frontend-pod` (nginx) — the only stack running.
 - **Caddy** is the only service listening publicly on port 80/443,
   terminates TLS, and reverse-proxies **path-based** onto the same domain:
   ```
@@ -198,15 +199,16 @@ fresh install.
 `ansible-vault`-encrypted in the repo, never committed in plaintext. The
 matching `*.example` files are the (plaintext-safe) templates.
 
-Every `secrets/<stage>/` directory carries the same four `.example`
+Every `secrets/<stage>/` directory carries the same five `.example`
 templates (`caddy.env.example`, `osa-backend-pg.env.example`,
-`osa-backend.env.j2.example`, `osa-frontend.env.j2.example`) regardless of
-whether that stage is deployed yet -- they hold no secrets, so there's no
-reason to withhold them. The four matching real, vault-encrypted files only
-get created once a stage has an actual target in `inventory/<stage>.ini`
-(not just a `CHANGEME.example.invalid` placeholder): `production` and any
-stage currently being stood up have all four; an unprovisioned stage has
-none yet.
+`osa-backend-valkey.env.example`, `osa-backend.env.j2.example`,
+`osa-frontend.env.j2.example`) regardless of whether that stage is
+deployed yet -- they hold no secrets, so there's no reason to withhold
+them. The five matching real, vault-encrypted files only get created once
+a stage has an actual target in `inventory/<stage>.ini` (not just a
+`CHANGEME.example.invalid` placeholder): `production` and any stage
+currently being stood up have all five; an unprovisioned stage has none
+yet.
 
 The two `.j2` files also contain Jinja2 expressions (`{{ backend_domain }}`
 etc., filled in from `inventory/<stage>.ini`) alongside the real secrets —
@@ -252,6 +254,15 @@ generated password, never reuse another stage's:
 cp secrets/<stage>/osa-backend-pg.env.example secrets/<stage>/osa-backend-pg.env
 $EDITOR secrets/<stage>/osa-backend-pg.env
 ansible-vault encrypt secrets/<stage>/osa-backend-pg.env
+```
+
+`secrets/<stage>/osa-backend-valkey.env` follows the identical workflow —
+its `VALKEY_PASSWORD` must match the value filled into that stage's
+`osa-backend.env.j2` (see `templates/osa-backend-valkey.container.j2`):
+```bash
+cp secrets/<stage>/osa-backend-valkey.env.example secrets/<stage>/osa-backend-valkey.env
+$EDITOR secrets/<stage>/osa-backend-valkey.env
+ansible-vault encrypt secrets/<stage>/osa-backend-valkey.env
 ```
 
 ### Standing up test/qa: permanent stage vs. one-off smoke test
@@ -426,10 +437,13 @@ frontend get Quadlets:
 | `dev/quadlets/backend/osa-backend-dev.build.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend-dev.build` | Builds `localhost/osa-backend-dev:latest` from `osa-backend`'s own `Dockerfile`, `dev` target |
 | `dev/quadlets/backend/osa-backend.container.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend.container` | Runs the backend, bind-mounts the repo, `uvicorn --reload` |
 | `dev/quadlets/backend/osa-backend-pg.container.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend-pg.container` | Dev's own PostgreSQL, separate from every Ansible-managed stage's |
+| `dev/quadlets/backend/osa-backend-valkey.container.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend-valkey.container` | Dev's own Valkey queue backend for the arq worker below |
+| `dev/quadlets/backend/osa-backend-worker.container.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend-worker.container` | Runs the arq job worker, bind-mounts the repo, `--watch` reload |
 | `dev/quadlets/backend/osa-backend.pod.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend.pod` | Publishes backend/Postgres ports, pod-wide settings |
 | `dev/quadlets/frontend/osa-frontend.container.example` | `~/.config/containers/systemd/osa/osa-frontend/osa-frontend.container` | Runs `npm run dev`, bind-mounts the repo, no build/pod unit needed |
 | `dev/env/osa-backend.env.example` | `~/.env/osa-backend.env` | Backend secrets/config (dev-sized subset, see below) |
 | `dev/env/osa-backend-pg.env.example` | `~/.env/osa-backend-pg.env` | Dev Postgres credentials |
+| `dev/env/osa-backend-valkey.env.example` | `~/.env/osa-backend-valkey.env` | Dev Valkey password |
 | `dev/env/osa-frontend.env.example` | `~/.env/osa-frontend.env` | Frontend build-time config |
 | `dev/Caddyfile.dev.example` | (append into your own Caddyfile) | The two vhosts described below |
 
@@ -446,7 +460,7 @@ suffix), `chmod 600` the env files, then reload systemd and start
 everything:
 
 ```bash
-mkdir -p ~/.config/containers/systemd/osa/osa-backend ~/.config/containers/systemd/osa/osa-frontend ~/.env ~/data/osa-backend/postgres
+mkdir -p ~/.config/containers/systemd/osa/osa-backend ~/.config/containers/systemd/osa/osa-frontend ~/.env ~/data/osa-backend/postgres ~/data/osa-backend/valkey
 
 for f in dev/quadlets/backend/*.example; do
   cp "$f" ~/.config/containers/systemd/osa/osa-backend/"$(basename "${f%.example}")"
@@ -457,22 +471,24 @@ done
 for f in dev/env/*.example; do
   cp "$f" ~/.env/"$(basename "${f%.example}")"
 done
-chmod 600 ~/.env/osa-backend.env ~/.env/osa-backend-pg.env ~/.env/osa-frontend.env
+chmod 600 ~/.env/osa-backend.env ~/.env/osa-backend-pg.env ~/.env/osa-backend-valkey.env ~/.env/osa-frontend.env
 ```
 
-`~/data/osa-backend/postgres` is `osa-backend-pg.container.example`'s bind
-mount target — Podman does not create a missing host directory for a bind
-mount, it fails outright (`Error: statfs ...: no such file or directory`)
-if it's absent.
+`~/data/osa-backend/postgres`/`~/data/osa-backend/valkey` are
+`osa-backend-pg.container.example`'s/`osa-backend-valkey.container.example`'s
+bind mount targets — Podman does not create a missing host directory for a
+bind mount, it fails outright (`Error: statfs ...: no such file or
+directory`) if it's absent.
 
 Edit each `~/.env/*.env` file next: fill in `<your-dev-domain>`,
 `<your-shorturl-domain>`, `SECRET_KEY`, `POSTGRES_PASSWORD`,
-`DATABASE_URL`'s password, and optionally
+`DATABASE_URL`'s password, `VALKEY_PASSWORD` (matching value in both
+`osa-backend.env` and `osa-backend-valkey.env`), and optionally
 `GOOGLE_CLIENT_ID`/`KOOFR_USER`/`KOOFR_PASSWORD`. Then:
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user start osa-backend-pg.service osa-backend.service osa-frontend.service
+systemctl --user start osa-backend-pg.service osa-backend-valkey.service osa-backend-worker.service osa-backend.service osa-frontend.service
 ```
 
 ### Caddy routing
@@ -612,9 +628,10 @@ administrative Root-Aufgaben (`sudo`), er betreibt selbst keine Container.
 - **systemd Quadlets** statt `docker-compose`: jeder Container/Pod wird als
   `.container`/`.pod`/`.volume`-Datei beschrieben, die `systemd --user`
   automatisch in einen echten systemd-Service übersetzt.
-- **Zwei Pods für die App:** `osa-backend-pod` (der Backend-Container plus
-  ein `osa-backend-pg`-PostgreSQL-Sidecar) und `osa-frontend-pod` (nginx) —
-  der einzige laufende Stack.
+- **Zwei Pods für die App:** `osa-backend-pod` (der Backend-Container, ein
+  `osa-backend-pg`-PostgreSQL-Sidecar, ein `osa-backend-valkey`-Queue-
+  Sidecar und ein `osa-backend-worker`-Container mit dem arq-Job-Worker)
+  und `osa-frontend-pod` (nginx) — der einzige laufende Stack.
 - **Caddy** ist der einzige Dienst, der öffentlich auf Port 80/443 lauscht,
   terminiert TLS und reverse-proxied **pfadbasiert** auf dieselbe Domain:
   ```
@@ -782,15 +799,16 @@ zur Neuinstallation.
 `ansible-vault`-verschlüsselt im Repo, nie im Klartext committet. Die
 passenden `*.example`-Dateien sind die (Klartext-sicheren) Vorlagen.
 
-Jedes `secrets/<stage>/`-Verzeichnis führt dieselben vier
+Jedes `secrets/<stage>/`-Verzeichnis führt dieselben fünf
 `.example`-Vorlagen (`caddy.env.example`, `osa-backend-pg.env.example`,
-`osa-backend.env.j2.example`, `osa-frontend.env.j2.example`), unabhängig
-davon, ob diese Stage schon deployt ist -- sie enthalten keine Secrets, es
-gibt also keinen Grund, sie vorzuenthalten. Die vier passenden echten,
-vault-verschlüsselten Dateien entstehen erst, sobald eine Stage ein
-tatsächliches Ziel in `inventory/<stage>.ini` hat (nicht nur einen
+`osa-backend-valkey.env.example`, `osa-backend.env.j2.example`,
+`osa-frontend.env.j2.example`), unabhängig davon, ob diese Stage schon
+deployt ist -- sie enthalten keine Secrets, es gibt also keinen Grund, sie
+vorzuenthalten. Die fünf passenden echten, vault-verschlüsselten Dateien
+entstehen erst, sobald eine Stage ein tatsächliches Ziel in
+`inventory/<stage>.ini` hat (nicht nur einen
 `CHANGEME.example.invalid`-Platzhalter): `production` und jede gerade
-aufgesetzte Stage haben alle vier, eine noch nicht bereitgestellte Stage
+aufgesetzte Stage haben alle fünf, eine noch nicht bereitgestellte Stage
 noch keine.
 
 Die beiden `.j2`-Dateien enthalten zusätzlich Jinja2-Ausdrücke
@@ -839,6 +857,16 @@ generierten Passwort, niemals das einer anderen Stage wiederverwenden:
 cp secrets/<stage>/osa-backend-pg.env.example secrets/<stage>/osa-backend-pg.env
 $EDITOR secrets/<stage>/osa-backend-pg.env
 ansible-vault encrypt secrets/<stage>/osa-backend-pg.env
+```
+
+`secrets/<stage>/osa-backend-valkey.env` folgt demselben Workflow — sein
+`VALKEY_PASSWORD` muss mit dem Wert übereinstimmen, der in der
+`osa-backend.env.j2` derselben Stage eingetragen wird (siehe
+`templates/osa-backend-valkey.container.j2`):
+```bash
+cp secrets/<stage>/osa-backend-valkey.env.example secrets/<stage>/osa-backend-valkey.env
+$EDITOR secrets/<stage>/osa-backend-valkey.env
+ansible-vault encrypt secrets/<stage>/osa-backend-valkey.env
 ```
 
 ### test/qa aufsetzen: dauerhafte Stage vs. Wegwerf-Smoke-Test
@@ -1023,10 +1051,13 @@ Frontend bekommen Quadlets:
 | `dev/quadlets/backend/osa-backend-dev.build.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend-dev.build` | Baut `localhost/osa-backend-dev:latest` aus `osa-backend`s eigenem `Dockerfile`, Target `dev` |
 | `dev/quadlets/backend/osa-backend.container.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend.container` | Startet das Backend, mountet das Repo, `uvicorn --reload` |
 | `dev/quadlets/backend/osa-backend-pg.container.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend-pg.container` | Eigenes Dev-PostgreSQL, getrennt von jeder Ansible-verwalteten Stage |
+| `dev/quadlets/backend/osa-backend-valkey.container.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend-valkey.container` | Eigener Dev-Valkey-Queue-Backend für den arq-Worker unten |
+| `dev/quadlets/backend/osa-backend-worker.container.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend-worker.container` | Startet den arq-Job-Worker, mountet das Repo, `--watch`-Reload |
 | `dev/quadlets/backend/osa-backend.pod.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend.pod` | Veröffentlicht Backend-/Postgres-Ports, Pod-weite Einstellungen |
 | `dev/quadlets/frontend/osa-frontend.container.example` | `~/.config/containers/systemd/osa/osa-frontend/osa-frontend.container` | Startet `npm run dev`, mountet das Repo, keine Build-/Pod-Unit nötig |
 | `dev/env/osa-backend.env.example` | `~/.env/osa-backend.env` | Backend-Secrets/-Config (dev-großer Teilumfang, siehe unten) |
 | `dev/env/osa-backend-pg.env.example` | `~/.env/osa-backend-pg.env` | Dev-Postgres-Zugangsdaten |
+| `dev/env/osa-backend-valkey.env.example` | `~/.env/osa-backend-valkey.env` | Dev-Valkey-Passwort |
 | `dev/env/osa-frontend.env.example` | `~/.env/osa-frontend.env` | Frontend-Build-Zeit-Config |
 | `dev/Caddyfile.dev.example` | (in die eigene Caddyfile einfügen) | Die beiden unten beschriebenen Vhosts |
 
@@ -1044,7 +1075,7 @@ weglassen), die Env-Dateien `chmod 600`, dann systemd neu laden und alles
 starten:
 
 ```bash
-mkdir -p ~/.config/containers/systemd/osa/osa-backend ~/.config/containers/systemd/osa/osa-frontend ~/.env ~/data/osa-backend/postgres
+mkdir -p ~/.config/containers/systemd/osa/osa-backend ~/.config/containers/systemd/osa/osa-frontend ~/.env ~/data/osa-backend/postgres ~/data/osa-backend/valkey
 
 for f in dev/quadlets/backend/*.example; do
   cp "$f" ~/.config/containers/systemd/osa/osa-backend/"$(basename "${f%.example}")"
@@ -1055,22 +1086,24 @@ done
 for f in dev/env/*.example; do
   cp "$f" ~/.env/"$(basename "${f%.example}")"
 done
-chmod 600 ~/.env/osa-backend.env ~/.env/osa-backend-pg.env ~/.env/osa-frontend.env
+chmod 600 ~/.env/osa-backend.env ~/.env/osa-backend-pg.env ~/.env/osa-backend-valkey.env ~/.env/osa-frontend.env
 ```
 
-`~/data/osa-backend/postgres` ist `osa-backend-pg.container.example`s
-Bind-Mount-Ziel — Podman legt ein fehlendes Host-Verzeichnis für einen
+`~/data/osa-backend/postgres`/`~/data/osa-backend/valkey` sind
+`osa-backend-pg.container.example`s/`osa-backend-valkey.container.example`s
+Bind-Mount-Ziele — Podman legt ein fehlendes Host-Verzeichnis für einen
 Bind-Mount nicht selbst an, sondern scheitert hart
 (`Error: statfs ...: no such file or directory`), wenn es fehlt.
 
 Danach jede `~/.env/*.env`-Datei bearbeiten: `<your-dev-domain>`,
 `<your-shorturl-domain>`, `SECRET_KEY`, `POSTGRES_PASSWORD`, das Passwort
-in `DATABASE_URL` sowie optional
+in `DATABASE_URL`, `VALKEY_PASSWORD` (muss in `osa-backend.env` und
+`osa-backend-valkey.env` übereinstimmen) sowie optional
 `GOOGLE_CLIENT_ID`/`KOOFR_USER`/`KOOFR_PASSWORD` eintragen. Dann:
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user start osa-backend-pg.service osa-backend.service osa-frontend.service
+systemctl --user start osa-backend-pg.service osa-backend-valkey.service osa-backend-worker.service osa-backend.service osa-frontend.service
 ```
 
 ### Caddy-Routing

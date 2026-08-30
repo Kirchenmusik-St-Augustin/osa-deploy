@@ -1,0 +1,29 @@
+[Unit]
+Description=OSA Backend ARQ Worker (Dev)
+After=osa-backend-dev-build.service osa-backend-pg.service osa-backend-valkey.service
+Requires=osa-backend-dev-build.service
+
+[Container]
+ContainerName=osa-backend-worker
+Pod=osa-backend.pod
+Image=osa-backend-dev.build
+Environment=SKIP_MIGRATIONS=true
+# Same watchfiles polling quirk as osa-backend.container.example's uvicorn
+# --reload -- arq's own --watch flag below is built on the same
+# watchfiles library, and Podman bind mounts don't reliably deliver
+# inotify events either way.
+Environment=WATCHFILES_FORCE_POLLING=true
+Volume=%h/projects/osa-fastapi-vue/osa-backend:/app:Z
+EnvironmentFile=%h/.env/osa-backend.env
+# --watch /app: restarts the worker on source changes, mirroring the
+# backend container's uvicorn --reload dev convenience. Never used in
+# production (see quadlets/worker's Exec=), where the image is immutable
+# per release and nothing needs watching.
+Exec=arq app.worker.settings.WorkerSettings --watch /app
+
+[Service]
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
