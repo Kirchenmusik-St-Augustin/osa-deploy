@@ -1,0 +1,20 @@
+[Unit]
+Description=OSA Backend ARQ Worker (Prod)
+
+[Container]
+ContainerName=osa-backend-worker
+Pod=osa-backend.pod
+Image=ghcr.io/kirchenmusik-st-augustin/osa-backend:latest
+AutoUpdate=registry
+EnvironmentFile=%h/.env/osa-backend.env
+# Same image/entrypoint as osa-backend.container -- SKIP_MIGRATIONS
+# prevents this container from re-running `alembic upgrade head`
+# concurrently with the web container's own migration run on every
+# restart cycle. Exactly one container (osa-backend) ever migrates.
+Environment=SKIP_MIGRATIONS=true
+Exec=arq app.worker.settings.WorkerSettings
+
+[Service]
+Restart=always
+RestartSec=5
+TimeoutStartSec=120

@@ -1,0 +1,39 @@
+[Unit]
+Description=Valkey Queue Backend for OSA Backend ARQ Worker (Prod)
+
+[Container]
+ContainerName=osa-backend-valkey
+Pod=osa-backend.pod
+Image=docker.io/valkey/valkey:8-alpine
+AutoUpdate=registry
+
+EnvironmentFile=%h/.env/osa-backend-valkey.env
+Volume=%h/data/osa/{{ app_environment }}/valkey:/data:Z
+# --appendonly yes: durability is the entire point of adding this queue --
+# a job already accepted by the web container must survive a worker/
+# Valkey restart (e.g. during a deploy), not just live in memory. Quadlet's
+# Exec= does not perform shell expansion of env vars, so the password
+# must be read via an explicit `sh -c` wrapper instead of being written
+# directly on the command line.
+#
+# Side effect, deliberately accepted: the official image's own entrypoint
+# only chowns /data and drops root privileges (via setpriv, to its own
+# unprivileged "valkey" user) when its first argument is literally
+# "valkey-server" -- wrapping the command in `sh -c` makes that "sh"
+# instead, so that branch never runs and the process stays at this
+# rootless container's own root, which maps 1:1 onto the host user that
+# already owns this directory (see the "Verzeichnisstruktur anlegen" task
+# in playbooks/deploy.yml -- no extra ownership-fix task is needed here,
+# unlike osa-backend-pg's, precisely because Postgres' own entrypoint DOES
+# drop to a different internal user).
+Exec=sh -c 'exec valkey-server --requirepass "$VALKEY_PASSWORD" --appendonly yes'
+
+HealthCmd=valkey-cli -a "$VALKEY_PASSWORD" --no-auth-warning ping || exit 1
+HealthInterval=10s
+HealthTimeout=5s
+HealthStartPeriod=10s
+HealthRetries=3
+
+[Service]
+Restart=always
+TimeoutStartSec=60

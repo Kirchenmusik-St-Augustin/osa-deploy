@@ -44,6 +44,7 @@
       - { src: maintenance, dest: "osa/infrastructure/maintenance" }
       - { src: logging, dest: "osa/infrastructure/logging" }
       - { src: backend, dest: "osa/osa-backend" }
+      - { src: worker, dest: "osa/osa-backend" }
       - { src: frontend, dest: "osa/osa-frontend" }
 
     # Der komplette Stack -- ein einziger Satz Units, kein Umschalten
@@ -78,6 +79,7 @@
         - "{{ remote_quadlet_base }}"
         - "{{ remote_systemd_user_dir }}"
         - "{{ ansible_user_dir }}/data/osa/{{ app_environment }}/postgres"
+        - "{{ ansible_user_dir }}/data/osa/{{ app_environment }}/valkey"
       ansible.builtin.file:
         path: "{{ item }}"
         state: directory
@@ -181,14 +183,21 @@
         mode: "0644"
       register: caddy_quadlet_copy
 
-    # Einziges Quadlet mit stage-abhaengigem Inhalt (Postgres-Datenpfad) --
-    # separat von der generischen Verzeichnis-Kopie oben, da es gerendert
-    # statt nur kopiert werden muss.
+    # Beide Quadlets mit stage-abhaengigem Inhalt (Datenpfad) -- separat
+    # von der generischen Verzeichnis-Kopie oben, da sie gerendert statt
+    # nur kopiert werden muessen.
     - name: "PostgreSQL-Quadlet rendern (Volume-Pfad ist stage-abhaengig)"
       tags: [always]
       ansible.builtin.template:
         src: "{{ local_templates_path }}/osa-backend-pg.container.j2"
         dest: "{{ remote_quadlet_base }}/osa/osa-backend/osa-backend-pg.container"
+        mode: "0644"
+
+    - name: "Valkey-Quadlet rendern (Volume-Pfad ist stage-abhaengig)"
+      tags: [always]
+      ansible.builtin.template:
+        src: "{{ local_templates_path }}/osa-backend-valkey.container.j2"
+        dest: "{{ remote_quadlet_base }}/osa/osa-backend/osa-backend-valkey.container"
         mode: "0644"
 
     # caddy.container's Volume-Mount erwartet die Caddyfile direkt neben
