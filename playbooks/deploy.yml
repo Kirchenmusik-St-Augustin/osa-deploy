@@ -1,10 +1,10 @@
 ---
 # Tag-2-Betrieb: Secrets, Quadlet-Definitionen, die Caddyfile und Timer auf
 # dem Produktions-Host synchron halten, und den kompletten Stack (Caddy +
-# Backend + Frontend + Maintenance + Dozzle) am Laufen halten. Baut KEINE
-# Images, klont KEINE App-Repos -- die Images kommen bereits fertig gebaut
-# aus ghcr.io und werden vom bereits aktiven podman-auto-update.timer
-# automatisch eingespielt.
+# Backend + Frontend + Dozzle) plus den woechentlichen podman-prune-Timer
+# am Laufen halten. Baut KEINE Images, klont KEINE App-Repos -- die Images
+# kommen bereits fertig gebaut aus ghcr.io und werden vom bereits aktiven
+# podman-auto-update.timer automatisch eingespielt.
 #
 # Aufruf: ansible-playbook -i inventory/<stage>.ini playbooks/deploy.yml --ask-vault-pass --check --diff
 #         ansible-playbook -i inventory/<stage>.ini playbooks/deploy.yml --ask-vault-pass
@@ -41,7 +41,6 @@
     # Quadlet-Quellordner -> Zielpfad unter remote_quadlet_base.
     quadlet_targets:
       - { src: caddy, dest: "osa/infrastructure/caddy" }
-      - { src: maintenance, dest: "osa/infrastructure/maintenance" }
       - { src: logging, dest: "osa/infrastructure/logging" }
       - { src: backend, dest: "osa/osa-backend" }
       - { src: worker, dest: "osa/osa-backend" }
@@ -210,7 +209,7 @@
         mode: "0644"
       register: caddyfile_copy
 
-    - name: Systemd-Timer kopieren (kein Quadlet, eigener Zielpfad)
+    - name: Native systemd-Units kopieren (podman-prune Service + Timer, kein Quadlet, eigener Zielpfad)
       tags: [always]
       ansible.builtin.copy:
         src: "{{ local_timers_path }}/"
