@@ -64,6 +64,40 @@ root. A second user `admin` exists only for administrative root tasks
   reachable at `einteilung.hochamt.at/logging/dozzle` behind basic auth.
 - **podman-prune.timer** cleans up unused images/containers weekly.
 
+### Container hardening: read-only rootfs & graceful shutdown
+
+`osa-backend` and `osa-backend-worker` run with `ReadOnly=true`,
+`NoNewPrivileges=true`, and `DropCapability=all` (same pattern as
+`caddy`/`logging-dozzle`). The only write either process needs is a
+temp file — gunicorn's per-worker heartbeat file, and the downloaded
+backup archive that `backup_koofr`/`downsync` write before handing it to
+`pg_restore` — covered by an explicit `Mount=type=tmpfs,target=/tmp` (on
+top of Podman's own `ReadOnlyTmpfs` default, which already covers it).
+
+Shutdown timeouts are deliberately layered so a restart never cuts off an
+in-flight request or background job: gunicorn's `--graceful-timeout` and
+arq's `job_completion_wait` (`app/worker/settings.py`) each mirror an
+existing ceiling that process already enforces during normal operation
+(gunicorn's own `--timeout`, arq's own default `job_timeout`) — a request
+or job can never legitimately run longer than that anyway, so the grace
+period never needs to allow more. Each Quadlet's `StopTimeout=`
+(Podman) and `TimeoutStopSec=` (systemd) build on top of those same
+values with a buffer, so neither Podman nor systemd kills the process
+before its own graceful shutdown had a real chance to finish. See the
+comments in `quadlets/backend/osa-backend.container` and
+`quadlets/worker/osa-backend-worker.container` for the exact numbers and
+their derivation.
+
+The local dev containers (`dev/quadlets/backend/*.example`) deliberately
+stay off this hardening — a throwaway hot-reload container isn't a
+security boundary worth the same verification effort.
+
+CI gates on this: `container-readonly-smoke-test` in
+`osa-backend`'s workflow builds the production image, runs both
+containers under the exact same restrictions, and fails the build before
+`release-image` if either one fails its health check or logs a
+read-only-filesystem violation.
+
 ## Prerequisites
 
 - Ansible installed locally.
@@ -656,6 +690,41 @@ administrative Root-Aufgaben (`sudo`), er betreibt selbst keine Container.
   Container, erreichbar über `einteilung.hochamt.at/logging/dozzle` hinter
   Basic-Auth.
 - **podman-prune.timer** räumt wöchentlich ungenutzte Images/Container auf.
+
+### Container-Härtung: read-only Rootfs & Graceful Shutdown
+
+`osa-backend` und `osa-backend-worker` laufen mit `ReadOnly=true`,
+`NoNewPrivileges=true` und `DropCapability=all` (dasselbe Muster wie bei
+`caddy`/`logging-dozzle`). Der einzige Schreibbedarf beider Prozesse ist
+eine Temp-Datei — Gunicorns Worker-Heartbeat-Datei sowie das
+heruntergeladene Backup-Archiv, das `backup_koofr`/`downsync` vor der
+Übergabe an `pg_restore` ablegen — abgedeckt durch ein explizites
+`Mount=type=tmpfs,target=/tmp` (zusätzlich zu Podmans eigenem
+`ReadOnlyTmpfs`-Default, der das bereits abdeckt).
+
+Die Shutdown-Timeouts sind bewusst so gestaffelt, dass ein Neustart nie
+eine laufende Anfrage oder einen laufenden Background-Job abschneidet:
+Gunicorns `--graceful-timeout` und arqs `job_completion_wait`
+(`app/worker/settings.py`) spiegeln jeweils ein bereits bestehendes Limit,
+das derselbe Prozess im Normalbetrieb ohnehin durchsetzt (Gunicorns
+eigenes `--timeout`, arqs eigener Default-`job_timeout`) — eine Anfrage
+oder ein Job kann so oder so nie länger laufen, die Grace-Period muss also
+nicht mehr erlauben. Das `StopTimeout=` (Podman) und `TimeoutStopSec=`
+(systemd) jeder Quadlet-Datei bauen mit Puffer auf genau diesen Werten
+auf, damit weder Podman noch systemd den Prozess killt, bevor sein eigenes
+Graceful Shutdown wirklich fertig werden konnte. Die exakten Zahlen samt
+Herleitung stehen als Kommentar in `quadlets/backend/osa-backend.container`
+und `quadlets/worker/osa-backend-worker.container`.
+
+Die lokalen Dev-Container (`dev/quadlets/backend/*.example`) bleiben
+bewusst ohne diese Härtung — ein Wegwerf-Hot-Reload-Container ist keine
+Sicherheitsgrenze, die denselben Verifikationsaufwand rechtfertigt.
+
+CI setzt hier an: `container-readonly-smoke-test` in `osa-backend`s
+Workflow baut das Produktions-Image, startet beide Container unter
+exakt denselben Restriktionen und lässt den Build vor `release-image`
+scheitern, falls einer der beiden den Health-Check nicht besteht oder
+eine Read-only-Filesystem-Verletzung loggt.
 
 ## Voraussetzungen
 
