@@ -1,0 +1,10 @@
+[Unit]
+Description=Podman garbage collector
+
+[Service]
+Type=oneshot
+# Runs podman directly on the host as the "service" user - no container,
+# so no podman-socket mount into a third-party image is needed for this
+# (a socket mount would itself be an attack surface: whoever holds the
+# socket controls every other rootless container this user runs).
+ExecStart=/usr/bin/podman system prune -a -f

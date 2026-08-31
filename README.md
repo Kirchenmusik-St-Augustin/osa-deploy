@@ -62,7 +62,9 @@ root. A second user `admin` exists only for administrative root tasks
   deploy (see below).
 - **Dozzle** is a read-only log viewer for all running containers,
   reachable at `einteilung.hochamt.at/logging/dozzle` behind basic auth.
-- **podman-prune.timer** cleans up unused images/containers weekly.
+- **podman-prune.timer** triggers a native systemd oneshot service
+  (`podman system prune -a -f`) weekly — runs directly on the host, no
+  container, no Podman-socket mount needed.
 
 ### Container hardening: read-only rootfs & graceful shutdown
 
@@ -126,13 +128,11 @@ directly as its own uid instead (relying on this repo's existing
 `podman unshare chown -R 999:999`/`chmod 700` deploy tasks having already
 set correct ownership up front). `osa-backend-valkey` needed no
 adjustment at all -- its `sh -c` `Exec=` wrapper (see that Quadlet's own
-comment) already keeps it off the same internal privilege-drop path.
-`podman-prune` (a thin Podman-CLI client talking to the host's own Podman
-socket, not touching its own filesystem for anything) needed nothing
-extra either. All verified the same way: built/pulled the exact image,
-ran it under the exact restrictions against a scratch volume, confirmed
-it works, then removed one restriction at a time to confirm it fails
-predictably without it.
+comment) already keeps it off the same internal privilege-drop path. Both
+verified the same way: built/pulled the exact image, ran it under the
+exact restrictions against a scratch volume, confirmed it works, then
+removed one restriction at a time to confirm it fails predictably without
+it.
 
 ## Prerequisites
 
@@ -377,10 +377,11 @@ ansible-playbook -i inventory/production.ini playbooks/deploy.yml --ask-vault-pa
 ansible-playbook -i inventory/production.ini playbooks/deploy.yml --ask-vault-pass                  # then apply
 ```
 
-Syncs secrets, quadlet **definitions** (Caddy/Maintenance/Logging/Backend/
-Frontend), the Caddyfile itself, and the maintenance timer; starts and
-keeps running the entire stack (Caddy + Backend + Frontend + Maintenance +
-Dozzle). Builds no images, clones no repos, restores no database. On a
+Syncs secrets, quadlet **definitions** (Caddy/Logging/Backend/Frontend),
+the Caddyfile itself, and the native podman-prune service/timer; starts
+and keeps running the entire stack (Caddy + Backend + Frontend + Dozzle)
+plus the weekly podman-prune cleanup run. Builds no images, clones no
+repos, restores no database. On a
 freshly stood-up stage (see "Standing up test/qa" above), that means the
 database is empty right after this — see "Fresh or empty Postgres data
 directory" below for the one extra step that gets you a working, populated
@@ -498,9 +499,9 @@ like production's own `shorturl_domain` isn't derived from
 
 Unlike production/test/qa, local dev has no Caddy Quadlet (Caddy runs as a
 regular host-wide service on the dev machine, shared with whatever else it
-proxies, not containerized) and no `logging`/`maintenance` equivalents
-(Dozzle and the prune timer are prod-only conveniences). Only backend and
-frontend get Quadlets:
+proxies, not containerized) and no `logging` Quadlet or podman-prune
+service/timer equivalents (Dozzle and the prune timer are prod-only
+conveniences). Only backend and frontend get Quadlets:
 
 | `dev/` path | Copy to | Purpose |
 |---|---|---|
@@ -725,7 +726,9 @@ administrative Root-Aufgaben (`sudo`), er betreibt selbst keine Container.
 - **Dozzle** ist ein schreibgeschützter Log-Viewer für alle laufenden
   Container, erreichbar über `einteilung.hochamt.at/logging/dozzle` hinter
   Basic-Auth.
-- **podman-prune.timer** räumt wöchentlich ungenutzte Images/Container auf.
+- **podman-prune.timer** stößt wöchentlich einen nativen systemd-Oneshot-
+  Service an (`podman system prune -a -f`) — läuft direkt auf dem Host,
+  kein Container, kein Podman-Socket-Mount nötig.
 
 ### Container-Härtung: read-only Rootfs & Graceful Shutdown
 
@@ -793,13 +796,10 @@ die bereits bestehenden `podman unshare chown -R 999:999`/`chmod
 700`-Deploy-Tasks, die die Berechtigungen vorher korrekt setzen).
 `osa-backend-valkey` brauchte keine Anpassung — der `sh -c`-`Exec=`-Wrapper
 (siehe Kommentar in dieser Quadlet-Datei) hält es ohnehin schon vom selben
-internen Privilegienwechsel-Pfad fern. `podman-prune` (ein reiner
-Podman-CLI-Client gegen den Host-eigenen Podman-Socket, rührt das eigene
-Dateisystem für nichts an) brauchte ebenfalls nichts Zusätzliches. Alles
-gleich verifiziert: exaktes Image gebaut/gepullt, unter exakt denselben
-Restriktionen gegen ein Wegwerf-Volume gestartet, Funktion bestätigt, dann
-je eine Restriktion einzeln entfernt und den vorhergesagten Fehlschlag
-bestätigt.
+internen Privilegienwechsel-Pfad fern. Beide gleich verifiziert: exaktes
+Image gebaut/gepullt, unter exakt denselben Restriktionen gegen ein
+Wegwerf-Volume gestartet, Funktion bestätigt, dann je eine Restriktion
+einzeln entfernt und den vorhergesagten Fehlschlag bestätigt.
 
 ## Voraussetzungen
 
@@ -1056,10 +1056,11 @@ ansible-playbook -i inventory/production.ini playbooks/deploy.yml --ask-vault-pa
 ansible-playbook -i inventory/production.ini playbooks/deploy.yml --ask-vault-pass                  # dann anwenden
 ```
 
-Synct Secrets, Quadlet-**Definitionen** (Caddy/Maintenance/Logging/Backend/
-Frontend), die Caddyfile selbst und den Maintenance-Timer; startet und hält
-den kompletten Stack am Laufen (Caddy + Backend + Frontend + Maintenance +
-Dozzle). Baut keine Images, klont keine Repos, restored keine Datenbank.
+Synct Secrets, Quadlet-**Definitionen** (Caddy/Logging/Backend/Frontend),
+die Caddyfile selbst und den nativen podman-prune-Service/-Timer; startet
+und hält den kompletten Stack am Laufen (Caddy + Backend + Frontend +
+Dozzle) plus den wöchentlichen podman-prune-Aufräumlauf. Baut keine
+Images, klont keine Repos, restored keine Datenbank.
 Bei einer frisch aufgesetzten Stage (siehe "test/qa aufsetzen" oben)
 bedeutet das: die Datenbank ist danach leer — siehe "Frisches oder leeres
 Postgres-Datenverzeichnis" unten für den einen zusätzlichen Schritt, der
@@ -1186,9 +1187,9 @@ Nichts unter `dev/` hardcoded eine bestimmte Domain.
 Anders als Produktion/Test/QA hat lokale Entwicklung kein Caddy-Quadlet
 (Caddy läuft als gewöhnlicher, host-weiter Dienst auf der Dev-Maschine,
 gemeinsam genutzt mit allem anderen, was sie sonst noch proxyt, nicht
-containerisiert) und keine `logging`-/`maintenance`-Entsprechung (Dozzle
-und der Prune-Timer sind reine Prod-Annehmlichkeiten). Nur Backend und
-Frontend bekommen Quadlets:
+containerisiert) und keine `logging`-Quadlet- oder
+podman-prune-Service/-Timer-Entsprechung (Dozzle und der Prune-Timer sind
+reine Prod-Annehmlichkeiten). Nur Backend und Frontend bekommen Quadlets:
 
 | `dev/`-Pfad | Kopieren nach | Zweck |
 |---|---|---|
