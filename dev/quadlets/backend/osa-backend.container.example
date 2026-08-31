@@ -12,6 +12,10 @@ Image=osa-backend-dev.build
 Environment=WATCHFILES_FORCE_POLLING=true
 Volume=%h/projects/osa-fastapi-vue/osa-backend:/app:Z
 EnvironmentFile=%h/.env/osa-backend.env
+# Deliberately not ReadOnly=true, unlike quadlets/backend's production
+# equivalent: this is a throwaway local dev container rebuilt on every
+# source change, not a security boundary worth hardening -- the
+# verification effort (see osa-backend's Dockerfile/CI) buys nothing here.
 
 HealthCmd=python3 -c 'import urllib.request; urllib.request.urlopen("http://localhost:8000/")'
 HealthInterval=30s

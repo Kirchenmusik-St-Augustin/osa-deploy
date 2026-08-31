@@ -14,7 +14,24 @@ EnvironmentFile=%h/.env/osa-backend.env
 Environment=SKIP_MIGRATIONS=true
 Exec=arq app.worker.settings.WorkerSettings
 
+ReadOnly=true
+NoNewPrivileges=true
+DropCapability=all
+# The downsync/backup_koofr jobs write the downloaded backup to a temp
+# file before pg_restore reads it (app/services/backup_service.py) --
+# ReadOnlyTmpfs already defaults to true and would cover this on its own,
+# but an explicit mount self-documents the requirement instead of relying
+# on an implicit Podman default.
+Mount=type=tmpfs,target=/tmp,tmpfs-mode=1777
+
 [Service]
 Restart=always
 RestartSec=5
 TimeoutStartSec=120
+# WorkerSettings.job_completion_wait (app/worker/settings.py) is 300s --
+# StopTimeout must exceed that so Podman doesn't SIGKILL a job mid-
+# pg_dump/pg_restore, and TimeoutStopSec must exceed StopTimeout so
+# systemd doesn't kill the `podman rm` cleanup itself first. Both carry a
+# 30s buffer on top.
+StopTimeout=330
+TimeoutStopSec=360

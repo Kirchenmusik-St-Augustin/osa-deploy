@@ -8,6 +8,15 @@ Image=ghcr.io/kirchenmusik-st-augustin/osa-backend:latest
 AutoUpdate=registry
 EnvironmentFile=%h/.env/osa-backend.env
 
+ReadOnly=true
+NoNewPrivileges=true
+DropCapability=all
+# gunicorn's worker heartbeat file (WorkerTmp) needs a writable /tmp it
+# can create+unlink -- ReadOnlyTmpfs already defaults to true and would
+# cover this on its own, but an explicit mount self-documents the
+# requirement instead of relying on an implicit Podman default.
+Mount=type=tmpfs,target=/tmp,tmpfs-mode=1777
+
 HealthCmd=python3 -c 'import urllib.request; urllib.request.urlopen("http://localhost:8000/")'
 HealthInterval=30s
 HealthTimeout=5s
@@ -18,3 +27,9 @@ HealthStartPeriod=10s
 Restart=always
 RestartSec=5
 TimeoutStartSec=120
+# gunicorn's --graceful-timeout (Dockerfile CMD) is 120s -- StopTimeout
+# must exceed that so Podman doesn't SIGKILL the arbiter mid-grace-period,
+# and TimeoutStopSec must exceed StopTimeout so systemd doesn't kill the
+# `podman rm` cleanup itself first. Both carry a 30s buffer on top.
+StopTimeout=150
+TimeoutStopSec=180

@@ -1,8 +1,8 @@
 [Unit]
-Description=Wöchentlicher Timer für Podman Image Cleanup
+Description=Weekly timer for Podman image cleanup
 
 [Timer]
-# Jeden Sonntag um 04:00 Uhr morgens (nach den Backups)
+# Every Sunday at 04:00 in the morning (after the backups)
 OnCalendar=Sun *-*-* 04:00:00
 Persistent=true
 

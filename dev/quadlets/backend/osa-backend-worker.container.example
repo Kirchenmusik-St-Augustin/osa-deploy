@@ -20,6 +20,10 @@ EnvironmentFile=%h/.env/osa-backend.env
 # production (see quadlets/worker's Exec=), where the image is immutable
 # per release and nothing needs watching.
 Exec=arq app.worker.settings.WorkerSettings --watch /app
+# Deliberately not ReadOnly=true, unlike quadlets/worker's production
+# equivalent: this is a throwaway local dev container rebuilt on every
+# source change, not a security boundary worth hardening -- the
+# verification effort (see osa-backend's Dockerfile/CI) buys nothing here.
 
 [Service]
 Restart=always
