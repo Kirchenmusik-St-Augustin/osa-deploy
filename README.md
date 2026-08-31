@@ -98,6 +98,42 @@ containers under the exact same restrictions, and fails the build before
 `release-image` if either one fails its health check or logs a
 read-only-filesystem violation.
 
+`osa-frontend` runs read-only too, but gets there differently: the nginx
+base image runs as root by default and internally `chown`/`setuid`s down
+to an unprivileged user for its worker processes, which needs
+`CAP_CHOWN`/`CAP_SETUID`/`CAP_SETGID` back under `DropCapability=all`. The
+Quadlet instead sets `User=101:101` (nginx's own uid) directly — nginx
+detects it's already non-root and skips that internal privilege-drop
+entirely, so only `CAP_NET_BIND_SERVICE` (binding port 80 as a
+non-root process) needs adding back. Two `Mount=type=tmpfs` exceptions:
+`/run` (nginx's pid file, and the runtime `config.js` that
+`docker-entrypoint.d/40-generate-runtime-config.sh` generates from
+`API_BASE_URL`/`APP_ENVIRONMENT`/`GOOGLE_CLIENT_ID` — see that script and
+`nginx.conf`'s `/config.js` location) and `/var/cache/nginx` (nginx
+creates its client/proxy/fastcgi/uwsgi/scgi temp dirs here unconditionally
+at startup, whether a static-only site ever uses them or not). No
+shutdown-timeout tuning needed here, unlike the backend: the base image
+already sets `STOPSIGNAL SIGQUIT` (nginx's own graceful-shutdown signal,
+verified to still apply through Podman), and a static file server has no
+long-running request/job to protect the way the backend's synchronous
+backup/restore trigger does.
+
+Every remaining container runs the same three directives too:
+`osa-backend-pg` (Postgres) sets `User=999:999` for the same reason as
+`osa-frontend` -- the official image's own root-to-postgres privilege
+drop needs `CAP_CHOWN` back under `DropCapability=all`, so it runs
+directly as its own uid instead (relying on this repo's existing
+`podman unshare chown -R 999:999`/`chmod 700` deploy tasks having already
+set correct ownership up front). `osa-backend-valkey` needed no
+adjustment at all -- its `sh -c` `Exec=` wrapper (see that Quadlet's own
+comment) already keeps it off the same internal privilege-drop path.
+`podman-prune` (a thin Podman-CLI client talking to the host's own Podman
+socket, not touching its own filesystem for anything) needed nothing
+extra either. All verified the same way: built/pulled the exact image,
+ran it under the exact restrictions against a scratch volume, confirmed
+it works, then removed one restriction at a time to confirm it fails
+predictably without it.
+
 ## Prerequisites
 
 - Ansible installed locally.
@@ -725,6 +761,45 @@ Workflow baut das Produktions-Image, startet beide Container unter
 exakt denselben Restriktionen und lässt den Build vor `release-image`
 scheitern, falls einer der beiden den Health-Check nicht besteht oder
 eine Read-only-Filesystem-Verletzung loggt.
+
+Auch `osa-frontend` läuft read-only, allerdings anders gelöst: Das
+nginx-Basisimage läuft standardmäßig als root und wechselt intern per
+`chown`/`setuid` zu einem unprivilegierten User für seine Worker-Prozesse
+— das würde unter `DropCapability=all` `CAP_CHOWN`/`CAP_SETUID`/
+`CAP_SETGID` zurück-erfordern. Die Quadlet-Datei setzt stattdessen direkt
+`User=101:101` (nginx' eigene UID) — nginx erkennt, dass es bereits
+nicht-root ist, und überspringt den internen Privilegien-Wechsel
+komplett, wodurch nur `CAP_NET_BIND_SERVICE` (Port 80 als Nicht-root-
+Prozess binden) zurückgebraucht wird. Zwei `Mount=type=tmpfs`-Ausnahmen:
+`/run` (nginx' PID-Datei sowie das zur Laufzeit generierte `config.js`,
+das `docker-entrypoint.d/40-generate-runtime-config.sh` aus
+`API_BASE_URL`/`APP_ENVIRONMENT`/`GOOGLE_CLIENT_ID` erzeugt — siehe dieses
+Skript und `nginx.conf`s `/config.js`-Location) und `/var/cache/nginx`
+(nginx legt seine client/proxy/fastcgi/uwsgi/scgi-Temp-Verzeichnisse dort
+beim Start bedingungslos an, unabhängig davon, ob eine rein statische
+Seite sie je nutzt). Kein Shutdown-Timeout-Tuning nötig, anders als beim
+Backend: das Basisimage setzt bereits `STOPSIGNAL SIGQUIT` (nginx' eigenes
+Graceful-Shutdown-Signal, verifiziert dass Podman das auch tatsächlich
+durchreicht), und ein statischer Fileserver hat keine lang laufende
+Anfrage/keinen Job zu schützen wie der synchrone Backup/Restore-Trigger
+des Backends.
+
+Auch alle übrigen Container laufen mit denselben drei Direktiven:
+`osa-backend-pg` (Postgres) setzt aus demselben Grund wie `osa-frontend`
+`User=999:999` — der interne root-zu-postgres-Privilegienwechsel des
+offiziellen Images bräuchte unter `DropCapability=all` `CAP_CHOWN` zurück,
+läuft also stattdessen direkt unter eigener UID (verlässt sich dabei auf
+die bereits bestehenden `podman unshare chown -R 999:999`/`chmod
+700`-Deploy-Tasks, die die Berechtigungen vorher korrekt setzen).
+`osa-backend-valkey` brauchte keine Anpassung — der `sh -c`-`Exec=`-Wrapper
+(siehe Kommentar in dieser Quadlet-Datei) hält es ohnehin schon vom selben
+internen Privilegienwechsel-Pfad fern. `podman-prune` (ein reiner
+Podman-CLI-Client gegen den Host-eigenen Podman-Socket, rührt das eigene
+Dateisystem für nichts an) brauchte ebenfalls nichts Zusätzliches. Alles
+gleich verifiziert: exaktes Image gebaut/gepullt, unter exakt denselben
+Restriktionen gegen ein Wegwerf-Volume gestartet, Funktion bestätigt, dann
+je eine Restriktion einzeln entfernt und den vorhergesagten Fehlschlag
+bestätigt.
 
 ## Voraussetzungen
 

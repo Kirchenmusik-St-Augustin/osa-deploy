@@ -11,6 +11,30 @@ AutoUpdate=registry
 # start nginx otherwise (see osa-frontend/docker/docker-entrypoint.d/).
 EnvironmentFile=%h/.env/osa-frontend.env
 
+# Runs the whole container as nginx's own unprivileged user from the
+# start instead of the image's default (root, then nginx internally
+# chowns/setuids down to this same uid for its worker processes) --
+# verified live: nginx detects it's already non-root and skips that
+# internal privilege-drop entirely, so DropCapability=all needs no
+# CAP_CHOWN/CAP_SETUID/CAP_SETGID added back, only the one capability an
+# unprivileged process needs to bind a port below 1024.
+User=101:101
+ReadOnly=true
+NoNewPrivileges=true
+DropCapability=all
+AddCapability=CAP_NET_BIND_SERVICE
+# /run: nginx's own pid file (/run/nginx.pid) plus
+# docker-entrypoint.d/40-generate-runtime-config.sh's generated config.js
+# (see nginx.conf). /var/cache/nginx: nginx creates its
+# client/proxy/fastcgi/uwsgi/scgi temp dirs here unconditionally at
+# startup, regardless of whether they're ever actually used by this
+# static-only site -- verified live: nginx refuses to start without it.
+# Both default to a restrictive mode when Podman auto-tmpfs's them for a
+# root-owned process, hence the explicit tmpfs-mode=1777 override needed
+# now that the container runs as non-root throughout.
+Mount=type=tmpfs,target=/run,tmpfs-mode=1777
+Mount=type=tmpfs,target=/var/cache/nginx,tmpfs-mode=1777
+
 HealthCmd=wget -qO- http://127.0.0.1/ || exit 1
 HealthInterval=30s
 HealthTimeout=5s
