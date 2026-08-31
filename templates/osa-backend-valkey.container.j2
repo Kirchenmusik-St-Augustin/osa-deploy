@@ -8,6 +8,9 @@ Image=docker.io/valkey/valkey:8-alpine
 AutoUpdate=registry
 
 EnvironmentFile=%h/.env/osa-backend-valkey.env
+ReadOnly=true
+NoNewPrivileges=true
+DropCapability=all
 Volume=%h/data/osa/{{ app_environment }}/valkey:/data:Z
 # --appendonly yes: durability is the entire point of adding this queue --
 # a job already accepted by the web container must survive a worker/
@@ -23,9 +26,11 @@ Volume=%h/data/osa/{{ app_environment }}/valkey:/data:Z
 # instead, so that branch never runs and the process stays at this
 # rootless container's own root, which maps 1:1 onto the host user that
 # already owns this directory (see the "Verzeichnisstruktur anlegen" task
-# in playbooks/deploy.yml -- no extra ownership-fix task is needed here,
-# unlike osa-backend-pg's, precisely because Postgres' own entrypoint DOES
-# drop to a different internal user).
+# in playbooks/deploy.yml -- no extra ownership-fix task is needed here).
+# Also why DropCapability=all below needs no User=/uid override the way
+# osa-backend-pg's does: this container never attempts that internal
+# chown/setpriv step in the first place, so there is no CAP_CHOWN-needing
+# privilege drop to skip.
 Exec=sh -c 'exec valkey-server --requirepass "$VALKEY_PASSWORD" --appendonly yes'
 
 HealthCmd=valkey-cli -a "$VALKEY_PASSWORD" --no-auth-warning ping || exit 1

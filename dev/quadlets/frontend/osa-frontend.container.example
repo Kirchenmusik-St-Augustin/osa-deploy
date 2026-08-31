@@ -11,6 +11,11 @@ UserNS=keep-id
 PodmanArgs=--workdir=/app
 Exec=npm run dev -- --host 0.0.0.0
 EnvironmentFile=%h/.env/osa-frontend.env
+# Deliberately not ReadOnly=true, unlike quadlets/frontend's production
+# equivalent: this runs Vite's dev server directly against the
+# bind-mounted source tree above, not the built nginx image -- an
+# entirely different runtime with none of the same write paths, and not a
+# security boundary worth hardening for a throwaway local container.
 
 HealthCmd=node -e 'const h=require("http");h.get("http://localhost:5173/",r=>{process.exit(r.statusCode===200?0:1)}).on("error",()=>process.exit(1))'
 HealthInterval=30s

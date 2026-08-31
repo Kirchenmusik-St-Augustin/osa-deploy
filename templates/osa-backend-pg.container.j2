@@ -8,6 +8,19 @@ Image=docker.io/library/postgres:18
 AutoUpdate=registry
 
 EnvironmentFile=%h/.env/osa-backend-pg.env
+# Runs directly as postgres' own uid (999) instead of the image's default
+# (root, which internally chowns the data directory down to uid 999 on
+# first start) -- verified live: with DropCapability=all, that internal
+# chown needs CAP_CHOWN and fails; running as 999 from the start skips it
+# entirely (the entrypoint's own "if [ "$user" = '0' ]" guard), relying
+# entirely on this playbook's existing "podman unshare chown -R 999:999" +
+# "chmod 700" tasks (deploy.yml) having already set correct ownership
+# before the very first start. Trade-off accepted: losing the image's
+# built-in ownership self-healing in exchange for DropCapability=all.
+User=999:999
+ReadOnly=true
+NoNewPrivileges=true
+DropCapability=all
 Volume=%h/data/osa/{{ app_environment }}/postgres:/var/lib/postgresql:Z
 
 HealthCmd=pg_isready -U osa -d osa || exit 1
