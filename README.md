@@ -11,7 +11,7 @@ configuration, Podman Quadlets, and (vault-encrypted) secrets.
 
 | Repo | What | Tech stack | Deployed as |
 |---|---|---|---|
-| [`osa-backend`](https://github.com/Kirchenmusik-St-Augustin/osa-backend) | Backend: scheduling/casting management for church musicians | Python 3.12, FastAPI, SQLAlchemy, PostgreSQL | `osa-backend` pod |
+| [`osa-backend`](https://github.com/Kirchenmusik-St-Augustin/osa-backend) | Backend: scheduling/casting management for church musicians | Python 3.14, FastAPI, SQLAlchemy, PostgreSQL | `osa-backend` pod |
 | [`osa-frontend`](https://github.com/Kirchenmusik-St-Augustin/osa-frontend) | Frontend to `osa-backend`: Vue 3 SPA | Vue 3 (`<script setup>`, TypeScript), Vite, nginx | `osa-frontend` pod |
 | `osa-deploy` (this repo) | Ops: Ansible, Caddy, Quadlets, Secrets | Ansible, systemd Quadlets | doesn't run itself — configures the others |
 
@@ -675,7 +675,7 @@ Podman-Quadlets und (vault-verschlüsselte) Secrets.
 
 | Repo | Was | Tech-Stack | Wird deployt als |
 |---|---|---|---|
-| [`osa-backend`](https://github.com/Kirchenmusik-St-Augustin/osa-backend) | Backend: Dienstplan-/Besetzungsverwaltung für Kirchenmusiker | Python 3.12, FastAPI, SQLAlchemy, PostgreSQL | `osa-backend`-Pod |
+| [`osa-backend`](https://github.com/Kirchenmusik-St-Augustin/osa-backend) | Backend: Dienstplan-/Besetzungsverwaltung für Kirchenmusiker | Python 3.14, FastAPI, SQLAlchemy, PostgreSQL | `osa-backend`-Pod |
 | [`osa-frontend`](https://github.com/Kirchenmusik-St-Augustin/osa-frontend) | Frontend zu `osa-backend`: Vue-3-SPA | Vue 3 (`<script setup>`, TypeScript), Vite, nginx | `osa-frontend`-Pod |
 | `osa-deploy` (dieses Repo) | Betrieb: Ansible, Caddy, Quadlets, Secrets | Ansible, systemd Quadlets | läuft nicht selbst als Service — konfiguriert die anderen |
 
