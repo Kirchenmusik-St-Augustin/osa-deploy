@@ -23,6 +23,16 @@ ReadOnly=true
 NoNewPrivileges=true
 DropCapability=all
 AddCapability=CAP_NET_BIND_SERVICE
+# The VPS this runs on has 1.9GB total RAM across all 7 application
+# containers -- an unbounded container could starve every neighbor on an
+# OOM event. 48m is ~22x the observed idle RSS (roughly 2.2MB); this
+# container only serves the pre-built static SPA bundle via nginx, so
+# there is no request-driven growth to budget for. Quadlet 5.4.2's
+# [Container] section has no native memory-limit key, so PodmanArgs= is
+# the only way to reach --memory. 32 PIDs covers nginx's master plus a
+# small worker-process pool.
+PodmanArgs=--memory=48m
+PidsLimit=32
 # /run: nginx's own pid file (/run/nginx.pid) plus
 # docker-entrypoint.d/40-generate-runtime-config.sh's generated config.js
 # (see nginx.conf). /var/cache/nginx: nginx creates its

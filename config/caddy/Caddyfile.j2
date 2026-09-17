@@ -6,8 +6,21 @@
 	}
 }
 
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Also strip Caddy's own identifying header -- header_down below
+		# only strips the upstream's.
+		-Server
+	}
+}
+
 {% if backend_domain == frontend_domain %}
 {{ backend_domain }} {
+	import security_headers
 	log
 	basic_auth /logging* {
 		{$LOGGING_USER} {$LOGGING_PASSWORD_HASH}
@@ -41,6 +54,7 @@
 }
 {% else %}
 {{ backend_domain }} {
+	import security_headers
 	log
 	basic_auth /logging* {
 		{$LOGGING_USER} {$LOGGING_PASSWORD_HASH}
@@ -70,6 +84,7 @@
 }
 
 {{ frontend_domain }} {
+	import security_headers
 	log
 	reverse_proxy 127.0.0.1:21001 {
 		header_down -Server
@@ -85,6 +100,7 @@
 # aber nicht erreichbar (dort routet nur /api/* zum Backend). Öffentlich,
 # unauthentifiziert -- reiner Redirect-Dienst.
 {{ shorturl_domain }} {
+	import security_headers
 	log
 	rewrite * /go{uri}
 	reverse_proxy 127.0.0.1:21000 {

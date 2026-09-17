@@ -4,6 +4,11 @@ Description=Valkey Queue Backend for OSA Backend ARQ Worker (Dev)
 [Container]
 ContainerName=osa-backend-valkey
 Pod=osa-backend.pod
+# Deliberately a floating major-version tag -- same reasoning as
+# osa-backend-pg.container.example: no podman-auto-update.timer runs on
+# dev machines, and the blast radius of a bad pull is a single throwaway
+# local dev queue, not the production system. An intentional
+# simplification, not an oversight.
 Image=docker.io/valkey/valkey:8-alpine
 AutoUpdate=registry
 EnvironmentFile=%h/.env/osa-backend-valkey.env

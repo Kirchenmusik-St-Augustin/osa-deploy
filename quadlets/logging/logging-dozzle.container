@@ -5,8 +5,30 @@ Requires=podman.socket
 
 [Container]
 ContainerName=logging-dozzle
-Image=docker.io/amir20/dozzle:latest
+# Pinned to a specific, verified digest instead of the floating ":latest"
+# tag -- with no AutoUpdate= label, ":latest" otherwise means "whatever
+# amir20/dozzle happened to push on first pull, forever" (no updates at
+# all) or, if AutoUpdate= were ever added later, "whatever gets pushed
+# next, sight unseen". Neither is acceptable for an image holding full
+# Podman-socket access to every other rootless container this user runs
+# (see the Volume= line below). Bumping Dozzle is now a deliberate,
+# manual edit.
+Image=docker.io/amir20/dozzle:v11.1.0@sha256:12ce38fbb957f507a39e2d7bb1dc7550f0b0851b030779580404904d2cfe19f3
 
+# SECURITY-ACCEPTED-RISK: this bind-mounts the rootless Podman API socket
+# read-only at the filesystem level, but "ro" only stops Dozzle from
+# replacing the socket file -- it does NOT restrict which API calls Dozzle
+# can make over that socket once connected (create/exec/delete are all
+# still reachable through the API itself). A compromised Dozzle image or a
+# vulnerability in Dozzle gives an attacker full control over every
+# container the "service" user runs, including osa-backend-pg and its
+# mounted secrets -- the exact class of risk this repo already documents
+# and deliberately avoids in systemd-timers/podman-prune.service. Accepted
+# short-term because Dozzle is loopback-only + Caddy basic-auth-gated, not
+# because the risk is small. Follow-up: replace with a read-only API proxy
+# in front of the socket (allow only list/logs/events, deny create/exec/
+# delete/volume-mount) or Dozzle's own agent-mode split, before treating
+# this as closed.
 Volume=%t/podman/podman.sock:/var/run/docker.sock:ro,z
 
 PublishPort=127.0.0.1:8081:8080
@@ -17,6 +39,16 @@ ReadOnly=true
 NoNewPrivileges=true
 
 DropCapability=all
+
+# The VPS this runs on has 1.9GB total RAM across all 7 application
+# containers -- an unbounded container could starve every neighbor on an
+# OOM event. 64m is ~6x the observed idle RSS (roughly 10MB); Dozzle only
+# streams logs to a small, admin-only audience via the socket mount
+# above. Quadlet 5.4.2's [Container] section has no native memory-limit
+# key, so PodmanArgs= is the only way to reach --memory. 32 PIDs covers
+# its log-tailing goroutine pool with headroom.
+PodmanArgs=--memory=64m
+PidsLimit=32
 
 Mount=type=tmpfs,target=/tmp
 

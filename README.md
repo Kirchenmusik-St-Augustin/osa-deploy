@@ -457,6 +457,15 @@ podman pull docker.io/library/postgres:<target-version>
 systemctl --user start osa-backend-pg.service
 ```
 
+Run both commands in the same sitting. The weekly `podman-prune.timer`
+(Sundays 04:00) removes any image not currently in use by a container, and
+a pre-pulled-but-not-yet-started image is exactly that -- Podman has no
+"reserved for later" state a prune can respect. If the actual bump won't
+happen within the same week as the pre-pull (e.g. waiting on a maintenance
+window), either pre-pull again immediately before starting the service, or
+`systemctl --user stop podman-prune.timer` for the gap and re-enable it
+afterward.
+
 Either way, the database that comes up is schema-migrated but **empty** —
 alembic creates the tables, it doesn't seed any rows. On a non-production
 stage, get a working system with real data by pulling down the latest
@@ -1140,6 +1149,16 @@ gerät:
 podman pull docker.io/library/postgres:<zielversion>
 systemctl --user start osa-backend-pg.service
 ```
+
+Beide Befehle in einem Zug ausführen. Der wöchentliche `podman-prune.timer`
+(Sonntags 04:00) entfernt jedes Image, das gerade von keinem Container
+verwendet wird — und ein vorab gepulltes, aber noch nicht gestartetes
+Image ist genau das. Podman kennt keinen "für später reserviert"-Zustand,
+den ein Prune respektieren könnte. Liegt der eigentliche Bump nicht in
+derselben Woche wie der Pre-Pull (z.B. weil ein Wartungsfenster abgewartet
+wird), entweder unmittelbar vor dem Start erneut pullen, oder für die
+Zwischenzeit `systemctl --user stop podman-prune.timer` setzen und danach
+wieder aktivieren.
 
 So oder so kommt die Datenbank danach schema-migriert, aber **leer** hoch —
 alembic legt die Tabellen an, befüllt aber keine Zeile. Auf einer

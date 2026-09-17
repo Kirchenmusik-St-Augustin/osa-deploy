@@ -4,20 +4,43 @@ Description=Valkey Queue Backend for OSA Backend ARQ Worker (Prod)
 [Container]
 ContainerName=osa-backend-valkey
 Pod=osa-backend.pod
-Image=docker.io/valkey/valkey:8-alpine
-AutoUpdate=registry
+# Pinned to a specific, verified patch release instead of the floating
+# "8-alpine" tag -- same reasoning as osa-backend-pg.container.j2: avoids
+# an unreviewed, unattended AutoUpdate=registry pull+restart of the job
+# queue's backing store. Bumping Valkey is now a deliberate, manual edit.
+Image=docker.io/valkey/valkey:8.1.10-alpine@sha256:d2e18f3410b6f616de1417f570fa55261af2898b9c5b2cfb6781ce2373ea43d1
 
 EnvironmentFile=%h/.env/osa-backend-valkey.env
 ReadOnly=true
 NoNewPrivileges=true
 DropCapability=all
+# The VPS this runs on has 1.9GB total RAM across all 7 application
+# containers -- an unbounded container could starve every neighbor on an
+# OOM event. 64m is ~22x the observed idle RSS (roughly 3MB); the on-disk
+# dataset is well under 1MB, so this is purely a job queue, not a cache
+# sized for large data volumes. Quadlet 5.4.2's [Container] section has
+# no native memory-limit key, so PodmanArgs= is the only way to reach
+# --memory. 32 PIDs covers valkey-server with headroom.
+PodmanArgs=--memory=64m
+PidsLimit=32
 Volume=%h/data/osa/{{ app_environment }}/valkey:/data:Z
+# A password passed as a --requirepass command-line argument sits in that
+# process's own argv for its entire runtime and reappears on every
+# restart -- readable by anything with /proc access in this rootless
+# user's namespace (verified live: valkey-server itself scrubs its argv
+# from `ps` shortly after startup, but that is undocumented internal
+# behavior of this one daemon, not a guarantee, and the brief startup
+# window is still exposed). Generating a one-time config file from the
+# env var at container start, entirely inside a shell builtin (no
+# external process ever sees the expanded value as its own argv), avoids
+# relying on that behavior. tmpfs-mode=1700 restricts the generated file
+# to this container's own user -- unlike the shared 1777 temp mounts
+# elsewhere in this repo, this one holds an actual secret, not
+# multi-process scratch space.
+Mount=type=tmpfs,target=/tmp,tmpfs-mode=1700
 # --appendonly yes: durability is the entire point of adding this queue --
 # a job already accepted by the web container must survive a worker/
-# Valkey restart (e.g. during a deploy), not just live in memory. Quadlet's
-# Exec= does not perform shell expansion of env vars, so the password
-# must be read via an explicit `sh -c` wrapper instead of being written
-# directly on the command line.
+# Valkey restart (e.g. during a deploy), not just live in memory.
 #
 # Side effect, deliberately accepted: the official image's own entrypoint
 # only chowns /data and drops root privileges (via setpriv, to its own
@@ -30,10 +53,17 @@ Volume=%h/data/osa/{{ app_environment }}/valkey:/data:Z
 # Also why DropCapability=all below needs no User=/uid override the way
 # osa-backend-pg's does: this container never attempts that internal
 # chown/setpriv step in the first place, so there is no CAP_CHOWN-needing
-# privilege drop to skip.
-Exec=sh -c 'exec valkey-server --requirepass "$VALKEY_PASSWORD" --appendonly yes'
+# privilege drop to skip. This same sh -c wrapper is now also what makes
+# the config-file generation above possible in the first place.
+Exec=sh -c 'umask 077 && printf "requirepass %s\nappendonly yes\n" "$VALKEY_PASSWORD" > /tmp/valkey.generated.conf && exec valkey-server /tmp/valkey.generated.conf'
 
-HealthCmd=valkey-cli -a "$VALKEY_PASSWORD" --no-auth-warning ping || exit 1
+# REDISCLI_AUTH (read by valkey-cli, kept for compatibility with its
+# Redis-derived name) keeps the password out of this process's argv too --
+# unlike the server, the CLI has no self-redaction and this command reruns
+# every HealthInterval, so a -a "$VALKEY_PASSWORD" argument would be a
+# recurring, predictable exposure window for the container's entire
+# lifetime, not just a one-time startup one.
+HealthCmd=REDISCLI_AUTH="$VALKEY_PASSWORD" valkey-cli ping || exit 1
 HealthInterval=10s
 HealthTimeout=5s
 HealthStartPeriod=10s

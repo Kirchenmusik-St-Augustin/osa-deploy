@@ -3,13 +3,33 @@ Description=Caddy Web Server (einteilung.hochamt.at)
 After=network-online.target
 
 [Container]
-Image=docker.io/library/caddy:2
-AutoUpdate=registry
+# Pinned to a specific, verified release instead of the floating major-
+# version tag ":2" -- this is the sole public TLS-terminating ingress for
+# the whole system; AutoUpdate=registry against a floating tag meant an
+# untested third-party release could take the entire site down overnight.
+# Bumping Caddy is now a deliberate, manual edit here.
+Image=docker.io/library/caddy:2.11.4@sha256:597f813aa60873d4c8148c816fbc4507d496ab160d620460279557f58ee3d0b9
 ContainerName=caddy
+# Podman's own docs call host network mode "considered insecure" (full
+# access to local system services, not just the target ports) -- accepted
+# here because this is the reverse proxy for every other service, all of
+# which publish only to 127.0.0.1 (see quadlets/backend/osa-backend.pod
+# and osa-frontend.pod), never on a shared bridge network. An isolated
+# per-container network namespace would see its own empty loopback, not
+# the host's, and could not reach 127.0.0.1:21000/21001/8081 at all --
+# see config/caddy/Caddyfile.j2's reverse_proxy targets. Network=host is
+# what makes that loopback-only publishing model work end to end.
+#
+# Deliberately no DNS= override: Network=host puts this container in the
+# same network namespace as the host, so the host's own resolver (here:
+# systemd-resolved's 127.0.0.53 stub) is reachable and usable exactly like
+# any other host process -- verified live, same result as the previously
+# hardcoded public resolvers this replaced. Hardcoding a different
+# resolver here would silently diverge from whatever DNS policy the host
+# itself is configured with, for a container that already has unmediated
+# access to the host's own resolver.
 Network=host
 Notify=healthy
-DNS=8.8.8.8
-DNS=1.1.1.1
 
 EnvironmentFile=%h/.env/caddy.env
 
@@ -19,6 +39,17 @@ NoNewPrivileges=true
 DropCapability=all
 # CAP_NET_BIND_SERVICE wird für die Ports 80 und 443 benötigt
 AddCapability=CAP_NET_BIND_SERVICE
+
+# The VPS this runs on has 1.9GB total RAM across all 7 application
+# containers -- an unbounded container could starve every neighbor on an
+# OOM event. 96m is ~8x the observed idle RSS (roughly 12MB); this Caddy
+# instance terminates TLS for einteilung.hochamt.at only, not a shared
+# multi-domain deployment, so traffic stays modest. Quadlet 5.4.2's
+# [Container] section has no native memory-limit key, so PodmanArgs= is
+# the only way to reach --memory. 64 PIDs covers Caddy's admin/worker
+# goroutine-backed processes with headroom.
+PodmanArgs=--memory=96m
+PidsLimit=64
 
 # Flüchtiger Speicher für Laufzeitdaten (Wichtig für ReadOnly)
 Mount=type=tmpfs,target=/tmp,tmpfs-mode=1777
