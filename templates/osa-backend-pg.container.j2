@@ -4,8 +4,12 @@ Description=PostgreSQL for OSA Backend (Prod)
 [Container]
 ContainerName=osa-backend-pg
 Pod=osa-backend.pod
-Image=docker.io/library/postgres:18
-AutoUpdate=registry
+# Pinned to a specific, verified patch release instead of the floating
+# major-version tag ":18" -- that tag silently moves to whatever Postgres
+# 18.x point release upstream pushes next, and AutoUpdate=registry would
+# then pull+restart the primary production database on that schedule,
+# unreviewed. Bumping Postgres is now a deliberate, manual edit here.
+Image=docker.io/library/postgres:18.6@sha256:1957b2ff3137e4ef7f3bc813e74fff50b1e1ffddc85c8b9d6f14ade972be8687
 
 EnvironmentFile=%h/.env/osa-backend-pg.env
 # Runs directly as postgres' own uid (999) instead of the image's default
@@ -21,6 +25,19 @@ User=999:999
 ReadOnly=true
 NoNewPrivileges=true
 DropCapability=all
+# The VPS this runs on has 1.9GB total RAM across all 7 application
+# containers -- an unbounded container could starve every neighbor on an
+# OOM event. 384m covers shared_buffers (configured at 128MB) plus
+# per-connection work_mem bursts with headroom, well above the observed
+# idle RSS (roughly 24MB). Quadlet 5.4.2's [Container] section has no
+# native memory-limit key, so PodmanArgs= is the only way to reach
+# --memory. PidsLimit=150 must stay comfortably above max_connections
+# (100) since Postgres runs one OS process per connection, plus its own
+# fixed background workers (checkpointer, background writer, walwriter,
+# autovacuum launcher) -- a tighter limit risks rejecting legitimate
+# connections, not just runaway ones.
+PodmanArgs=--memory=384m
+PidsLimit=150
 Volume=%h/data/osa/{{ app_environment }}/postgres:/var/lib/postgresql:Z
 
 HealthCmd=pg_isready -U osa -d osa || exit 1

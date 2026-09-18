@@ -1,6 +1,11 @@
 [Unit]
-Wants=osa-backend.service osa-backend-pg.service
-Before=osa-backend.service osa-backend-pg.service
+# Matches quadlets/backend/osa-backend.pod's production list exactly --
+# Quadlet also auto-adds Wants=/Before= per container based on each
+# .container file's own Pod= line (verified live), so this manual list is
+# redundant rather than load-bearing, but an incomplete one here reads as
+# if worker/valkey aren't meant to start with the pod.
+Wants=osa-backend.service osa-backend-pg.service osa-backend-valkey.service osa-backend-worker.service
+Before=osa-backend.service osa-backend-pg.service osa-backend-valkey.service osa-backend-worker.service
 
 [Pod]
 PodName=osa-backend-pod

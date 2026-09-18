@@ -259,7 +259,13 @@
     # ------------------------------------------------------------------
     # 6. Rootless Podman: linger + kernel tuning
     # ------------------------------------------------------------------
+    - name: Check whether linger is already enabled for "service"
+      ansible.builtin.stat:
+        path: /var/lib/systemd/linger/service
+      register: linger_check
+
     - name: Enable linger for "service" (containers survive logout)
+      when: not linger_check.stat.exists
       ansible.builtin.command: loginctl enable-linger service
       changed_when: true
 
@@ -302,29 +308,82 @@
         mode: "0644"
 
     # ------------------------------------------------------------------
-    # 7. Reboot NOW (finalizes kernel/Podman/sysctl changes) -
-    # deliberately BEFORE the SSH hardening: the reboot module reconnects
-    # as root after the restart to verify the host is back up. If
-    # PermitRootLogin=no had already been written to disk beforehand, the
-    # freshly started sshd would lock root out immediately and the
+    # 7. Reboot ONLY IF actually required (finalizes kernel/Podman/sysctl
+    # changes) - deliberately BEFORE the SSH hardening: the reboot module
+    # reconnects as root after the restart to verify the host is back up.
+    # If PermitRootLogin=no had already been written to disk beforehand,
+    # the freshly started sshd would lock root out immediately and the
     # module would hang until reboot_timeout on its own reconnect check.
+    #
+    # Gated on a real reboot-required check per distro family: an
+    # unconditional reboot here would fire on every re-run against an
+    # already-hardened host too (this playbook's own documented purpose,
+    # see README "Re-Run / Verifikation, erwartet quasi kein Diff") -
+    # taking production down on what's supposed to be a safe verification
+    # pass.
     # ------------------------------------------------------------------
-    - name: Reboot host (finalizes kernel/Podman/systemd changes)
+    - name: Check whether a reboot is required (Debian)
+      when: ansible_os_family == "Debian"
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: debian_reboot_required
+
+    - name: Check whether a reboot is required (RedHat)
+      when: ansible_os_family == "RedHat"
+      ansible.builtin.command: needs-restarting -r
+      register: redhat_reboot_required
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Check whether a reboot is required (SUSE)
+      when: ansible_os_family == "Suse"
+      ansible.builtin.command: zypper ps -s
+      register: suse_reboot_required
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Reboot host (finalizes kernel/Podman/systemd changes, only if actually needed)
+      when: >-
+        (ansible_os_family == "Debian" and debian_reboot_required.stat.exists) or
+        (ansible_os_family == "RedHat" and redhat_reboot_required.rc == 1) or
+        (ansible_os_family == "Suse" and (suse_reboot_required.stdout | trim) != "")
       ansible.builtin.reboot:
         reboot_timeout: 600
 
     # ------------------------------------------------------------------
     # 8. Firewall: only SSH + HTTP/HTTPS (Caddy) left open
     # ------------------------------------------------------------------
+    # Idempotent community.general.ufw module instead of raw "ufw" commands:
+    # ansible.builtin.command tasks always report changed=true (no built-in
+    # state comparison) and are skipped entirely under --check by default,
+    # so the previous raw-command version never actually verified the
+    # firewall under `--check --diff` and always showed spurious "changed"
+    # on every real re-run (confirmed live against production).
     - name: Configure firewall (Debian/UFW)
       when: ansible_os_family == "Debian"
       block:
-        - ansible.builtin.command: ufw default allow outgoing
-        - ansible.builtin.command: ufw default deny incoming
-        - ansible.builtin.command: ufw allow 22/tcp
-        - ansible.builtin.command: ufw allow 80/tcp
-        - ansible.builtin.command: ufw allow 443/tcp
-        - ansible.builtin.command: ufw --force enable
+        - community.general.ufw:
+            default: allow
+            direction: outgoing
+        - community.general.ufw:
+            default: deny
+            direction: incoming
+        - community.general.ufw:
+            rule: allow
+            port: "22"
+            proto: tcp
+        - community.general.ufw:
+            rule: allow
+            port: "80"
+            proto: tcp
+        - community.general.ufw:
+            rule: allow
+            port: "443"
+            proto: tcp
+        - community.general.ufw:
+            state: enabled
 
     - name: Configure firewall (RedHat/SUSE/firewalld)
       when: ansible_os_family in ["RedHat", "Suse"]
@@ -333,7 +392,23 @@
             name: firewalld
             state: started
             enabled: yes
-        - ansible.builtin.command: firewall-cmd --set-default-zone=public
+
+        # No dedicated "set default zone" module exists in ansible.posix/
+        # community.general -- kept as a raw command, but now read-check-
+        # act instead of unconditional, so it only runs (and only reports
+        # changed) when the zone actually differs.
+        - name: Check current default firewalld zone
+          ansible.builtin.command: firewall-cmd --get-default-zone
+          register: firewalld_current_zone
+          changed_when: false
+          check_mode: false
+
+        - name: Set default firewalld zone to public
+          when: (firewalld_current_zone.stdout | trim) != "public"
+          ansible.builtin.command: firewall-cmd --set-default-zone=public
+          changed_when: true
+          register: firewalld_zone_set
+
         - ansible.builtin.firewalld:
             port: "{{ item }}"
             permanent: yes
@@ -342,7 +417,12 @@
             - 22/tcp
             - 80/tcp
             - 443/tcp
-        - ansible.builtin.command: firewall-cmd --reload
+          register: firewalld_ports
+
+        - name: Reload firewalld, if the default zone or any port rule actually changed
+          ansible.builtin.command: firewall-cmd --reload
+          when: (firewalld_zone_set is changed) or (firewalld_ports.changed)
+          changed_when: true
 
     # ------------------------------------------------------------------
     # 9. SSH hardening (after the reboot - locks root out only at the end
@@ -359,7 +439,14 @@
     - name: Disable password login for "admin" (key-only)
       ansible.builtin.blockinfile:
         path: /etc/ssh/sshd_config
-        marker: "# {mark} ANSIBLE MANAGED BLOCK - admin key-only"
+        # Must match the marker text this task has always used in practice
+        # ("ADMIN SSH") -- blockinfile only recognizes a block as already
+        # present when its marker matches exactly, so a text-only rename
+        # here (e.g. to "admin key-only") would make every future run
+        # append a second, duplicate block instead of recognizing the
+        # existing one (confirmed live via --check --diff against
+        # production, which already has the "ADMIN SSH"-marked block).
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - ADMIN SSH"
         block: |
           Match User admin
               PasswordAuthentication no

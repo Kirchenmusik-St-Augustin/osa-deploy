@@ -46,8 +46,7 @@
       - { src: worker, dest: "osa/osa-backend" }
       - { src: frontend, dest: "osa/osa-frontend" }
 
-    # Der komplette Stack -- ein einziger Satz Units, kein Umschalten
-    # zwischen zwei Ständen mehr (Legacy ist entsorgt).
+    # Der komplette Stack -- ein einziger Satz Units.
     managed_units_safe:
       - podman-prune.timer
       - caddy.service
@@ -170,6 +169,7 @@
         src: "{{ local_quadlets_path }}/{{ item.src }}/"
         dest: "{{ remote_quadlet_base }}/{{ item.dest }}/"
         mode: "0644"
+      register: quadlet_copy_results
 
     # Kept separate from the generic copy above so a change to the quadlet
     # definition itself (e.g. its volume mount) triggers the same Caddy
@@ -191,6 +191,7 @@
         src: "{{ local_templates_path }}/osa-backend-pg.container.j2"
         dest: "{{ remote_quadlet_base }}/osa/osa-backend/osa-backend-pg.container"
         mode: "0644"
+      register: pg_quadlet_render
 
     - name: "Valkey-Quadlet rendern (Volume-Pfad ist stage-abhaengig)"
       tags: [always]
@@ -198,6 +199,7 @@
         src: "{{ local_templates_path }}/osa-backend-valkey.container.j2"
         dest: "{{ remote_quadlet_base }}/osa/osa-backend/osa-backend-valkey.container"
         mode: "0644"
+      register: valkey_quadlet_render
 
     # caddy.container's Volume-Mount erwartet die Caddyfile direkt neben
     # der Quadlet-Definition, siehe quadlets/caddy/caddy.container.
@@ -208,6 +210,26 @@
         dest: "{{ remote_quadlet_base }}/osa/infrastructure/caddy/Caddyfile"
         mode: "0644"
       register: caddyfile_copy
+
+    # Beide Volume-Quadlets tragen den Stage-Namen im VolumeName= (statt
+    # eines hartcodierten "-prod"), deshalb gerendert statt nur kopiert --
+    # dieselbe Datei landet sonst identisch auf test/qa und benennt deren
+    # Volumes faelschlich "prod".
+    - name: "Caddy-Data-Volume-Quadlet rendern (Volume-Name ist stage-abhaengig)"
+      tags: [always]
+      ansible.builtin.template:
+        src: "{{ local_templates_path }}/caddy-data.volume.j2"
+        dest: "{{ remote_quadlet_base }}/osa/infrastructure/caddy/caddy-data.volume"
+        mode: "0644"
+      register: caddy_data_volume_render
+
+    - name: "Caddy-Config-Volume-Quadlet rendern (Volume-Name ist stage-abhaengig)"
+      tags: [always]
+      ansible.builtin.template:
+        src: "{{ local_templates_path }}/caddy-config.volume.j2"
+        dest: "{{ remote_quadlet_base }}/osa/infrastructure/caddy/caddy-config.volume"
+        mode: "0644"
+      register: caddy_config_volume_render
 
     - name: Native systemd-Units kopieren (podman-prune Service + Timer, kein Quadlet, eigener Zielpfad)
       tags: [always]
@@ -245,7 +267,9 @@
 
     - name: Caddy neu starten, falls sich die Caddyfile oder das Quadlet geändert hat
       tags: [always]
-      when: caddyfile_copy.changed or caddy_quadlet_copy.changed
+      when: >-
+        caddyfile_copy.changed or caddy_quadlet_copy.changed
+        or caddy_data_volume_render.changed or caddy_config_volume_render.changed
       ansible.builtin.systemd:
         scope: user
         name: caddy.service
@@ -256,17 +280,86 @@
       # doesn't exist yet either on a --check run against a brand-new host.
       ignore_errors: "{{ ansible_check_mode }}"
 
+    # osa-backend-pod covers backend+worker: both quadlet_targets entries
+    # copy into the same "osa/osa-backend" destination directory, and both
+    # containers are members of the same pod (osa-backend.pod's own
+    # Wants=/Before= already restarts the worker alongside it, see that
+    # file). Without this task, a quadlet-only change (e.g. a hardening
+    # flag) would sit on disk without ever reaching the running container.
+    - name: osa-backend-pod neu starten, falls Backend-/Worker-/PG-/Valkey-Quadlet sich geaendert hat
+      tags: [always]
+      when: >-
+        (quadlet_copy_results.results
+          | selectattr('item.dest', 'equalto', 'osa/osa-backend')
+          | selectattr('changed')
+          | list | length > 0)
+        or pg_quadlet_render.changed
+        or valkey_quadlet_render.changed
+      ansible.builtin.systemd:
+        scope: user
+        name: osa-backend-pod.service
+        state: restarted
+      environment:
+        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: osa-frontend-pod neu starten, falls das Frontend-Quadlet sich geaendert hat
+      tags: [always]
+      when: >-
+        quadlet_copy_results.results
+          | selectattr('item.dest', 'equalto', 'osa/osa-frontend')
+          | selectattr('changed')
+          | list | length > 0
+      ansible.builtin.systemd:
+        scope: user
+        name: osa-frontend-pod.service
+        state: restarted
+      environment:
+        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: logging-dozzle neu starten, falls dessen Quadlet sich geaendert hat
+      tags: [always]
+      when: >-
+        quadlet_copy_results.results
+          | selectattr('item.dest', 'equalto', 'osa/infrastructure/logging')
+          | selectattr('changed')
+          | list | length > 0
+      ansible.builtin.systemd:
+        scope: user
+        name: logging-dozzle.service
+        state: restarted
+      environment:
+        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+      ignore_errors: "{{ ansible_check_mode }}"
+
     # ------------------------------------------------------------------
     # Sofort-Deploy (nur bei explizitem --tags) -- pullt das aktuelle
     # :latest-Image und startet den betroffenen Pod neu, statt auf den
     # naechtlichen podman-auto-update.timer zu warten.
     # ------------------------------------------------------------------
+    # podman pull writes its progress (including "Copying blob") to stderr,
+    # on every single call, regardless of whether the image actually
+    # changed. Only the final image ID on stdout is reliable -- the same
+    # value "podman image inspect --format '{{.Id}}'" would report.
+    - name: "Sofort-Deploy osa-backend: aktuelle lokale Image-ID ermitteln"
+      tags: [never, deploy-backend]
+      ansible.builtin.command: >-
+        podman image inspect ghcr.io/kirchenmusik-st-augustin/osa-backend:latest
+        --format '{{ "{{" }}.Id{{ "}}" }}'
+      register: osa_backend_image_id_before
+      environment:
+        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+      changed_when: false
+      failed_when: false
+
     - name: "Sofort-Deploy osa-backend: Image pullen"
       tags: [never, deploy-backend]
       ansible.builtin.command: podman pull ghcr.io/kirchenmusik-st-augustin/osa-backend:latest
+      register: osa_backend_pull_result
       environment:
         XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
-      changed_when: true
+      changed_when: osa_backend_image_id_before.stdout != osa_backend_pull_result.stdout_lines[-1]
 
     - name: "Sofort-Deploy osa-backend: Pod neu starten"
       # NICHT osa-backend.service direkt neu starten: der Container ist
@@ -283,12 +376,24 @@
       environment:
         XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
 
+    - name: "Sofort-Deploy osa-frontend: aktuelle lokale Image-ID ermitteln"
+      tags: [never, deploy-frontend]
+      ansible.builtin.command: >-
+        podman image inspect ghcr.io/kirchenmusik-st-augustin/osa-frontend:latest
+        --format '{{ "{{" }}.Id{{ "}}" }}'
+      register: osa_frontend_image_id_before
+      environment:
+        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+      changed_when: false
+      failed_when: false
+
     - name: "Sofort-Deploy osa-frontend: Image pullen"
       tags: [never, deploy-frontend]
       ansible.builtin.command: podman pull ghcr.io/kirchenmusik-st-augustin/osa-frontend:latest
+      register: osa_frontend_pull_result
       environment:
         XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
-      changed_when: true
+      changed_when: osa_frontend_image_id_before.stdout != osa_frontend_pull_result.stdout_lines[-1]
 
     - name: "Sofort-Deploy osa-frontend: Pod neu starten"
       tags: [never, deploy-frontend]

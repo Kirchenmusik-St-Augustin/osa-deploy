@@ -4,6 +4,13 @@ Description=PostgreSQL for OSA Backend (Dev)
 [Container]
 ContainerName=osa-backend-pg
 Pod=osa-backend.pod
+# Deliberately a floating major-version tag, unlike quadlets/backend's
+# production equivalent (pinned to tag@digest there): dev machines don't
+# run podman-auto-update.timer, so nothing here pulls or restarts this
+# container unattended -- AutoUpdate=registry only ever takes effect on an
+# explicit `podman auto-update` a developer runs themselves, and the
+# blast radius of a bad pull is a single throwaway local dev DB, not the
+# production system. An intentional simplification, not an oversight.
 Image=docker.io/library/postgres:18
 AutoUpdate=registry
 EnvironmentFile=%h/.env/osa-backend-pg.env

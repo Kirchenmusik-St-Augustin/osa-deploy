@@ -17,21 +17,38 @@ Exec=arq app.worker.settings.WorkerSettings
 ReadOnly=true
 NoNewPrivileges=true
 DropCapability=all
+# The VPS this runs on has 1.9GB total RAM across all 7 application
+# containers -- an unbounded container could starve every neighbor on an
+# OOM event. 384m is ~4.4x the observed idle RSS (roughly 88MB); the
+# backup/downsync jobs (pg_dump/pg_restore) stream rather than buffer the
+# whole database in memory, so this leaves generous headroom without
+# leaving the cap effectively meaningless. Quadlet 5.4.2's [Container]
+# section has no native memory-limit key, so PodmanArgs= is the only way
+# to reach --memory. 32 PIDs covers the arq worker plus the
+# pg_dump/pg_restore subprocess a backup job spawns.
+PodmanArgs=--memory=384m
+PidsLimit=32
 # The downsync/backup_koofr jobs write the downloaded backup to a temp
 # file before pg_restore reads it (app/services/backup_service.py) --
 # ReadOnlyTmpfs already defaults to true and would cover this on its own,
 # but an explicit mount self-documents the requirement instead of relying
 # on an implicit Podman default.
 Mount=type=tmpfs,target=/tmp,tmpfs-mode=1777
+# WorkerSettings.job_completion_wait (app/worker/settings.py) is 300s --
+# StopTimeout must exceed that so Podman doesn't SIGKILL a job mid-
+# pg_dump/pg_restore. Must live here in [Container], not [Service]: that's
+# the only section Quadlet translates into podman run's --stop-timeout
+# flag. A [Service]-section StopTimeout= is passed through unvalidated and
+# silently ignored by systemd (confirmed via `systemd-analyze verify`:
+# "Unknown key 'StopTimeout' in section [Service], ignoring") -- it
+# previously sat there and never actually took effect.
+StopTimeout=330
 
 [Service]
 Restart=always
 RestartSec=5
 TimeoutStartSec=120
-# WorkerSettings.job_completion_wait (app/worker/settings.py) is 300s --
-# StopTimeout must exceed that so Podman doesn't SIGKILL a job mid-
-# pg_dump/pg_restore, and TimeoutStopSec must exceed StopTimeout so
-# systemd doesn't kill the `podman rm` cleanup itself first. Both carry a
+# Must exceed [Container]'s StopTimeout=330 above so systemd doesn't kill
+# the `podman rm` cleanup itself before Podman's own stop-timeout elapses.
 # 30s buffer on top.
-StopTimeout=330
 TimeoutStopSec=360
