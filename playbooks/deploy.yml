@@ -46,8 +46,7 @@
       - { src: worker, dest: "osa/osa-backend" }
       - { src: frontend, dest: "osa/osa-frontend" }
 
-    # Der komplette Stack -- ein einziger Satz Units, kein Umschalten
-    # zwischen zwei Ständen mehr (Legacy ist entsorgt).
+    # Der komplette Stack -- ein einziger Satz Units.
     managed_units_safe:
       - podman-prune.timer
       - caddy.service
