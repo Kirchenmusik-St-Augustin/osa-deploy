@@ -1,16 +1,16 @@
 ---
-# Tag-2-Betrieb: Secrets, Quadlet-Definitionen, die Caddyfile und Timer auf
-# dem Produktions-Host synchron halten, und den kompletten Stack (Caddy +
-# Backend + Frontend + Dozzle) plus den woechentlichen podman-prune-Timer
-# am Laufen halten. Baut KEINE Images, klont KEINE App-Repos -- die Images
-# kommen bereits fertig gebaut aus ghcr.io und werden vom bereits aktiven
-# podman-auto-update.timer automatisch eingespielt.
+# Day-2 operations: keeps secrets, Quadlet definitions, the Caddyfile, and
+# timers in sync on the production host, and keeps the whole stack (Caddy +
+# Backend + Frontend + Dozzle) plus the weekly podman-prune timer running.
+# Builds NO images, clones NO app repos -- the images already come
+# pre-built from ghcr.io and are pulled in automatically by the already-
+# active podman-auto-update.timer.
 #
-# Aufruf: ansible-playbook -i inventory/<stage>.ini playbooks/deploy.yml --ask-vault-pass --check --diff
-#         ansible-playbook -i inventory/<stage>.ini playbooks/deploy.yml --ask-vault-pass
-# <stage> ist eine der Dateien in inventory/ (production/test/qa).
+# Usage: ansible-playbook -i inventory/<stage>.ini playbooks/deploy.yml --ask-vault-pass --check --diff
+#        ansible-playbook -i inventory/<stage>.ini playbooks/deploy.yml --ask-vault-pass
+# <stage> is one of the files in inventory/ (production/test/qa).
 #
-# Sofort-Deploy statt auf den naechtlichen Auto-Update-Lauf zu warten:
+# Immediate deploy instead of waiting for the nightly auto-update run:
 #   ansible-playbook -i inventory/<stage>.ini ... --ask-vault-pass --tags deploy-backend
 #   ansible-playbook -i inventory/<stage>.ini ... --ask-vault-pass --tags deploy-frontend
 
@@ -38,7 +38,7 @@
     remote_systemd_user_dir: "{{ ansible_user_dir }}/.config/systemd/user"
     xdg_runtime_dir: "/run/user/{{ ansible_facts.user_uid }}"
 
-    # Quadlet-Quellordner -> Zielpfad unter remote_quadlet_base.
+    # Quadlet source folder -> destination path under remote_quadlet_base.
     quadlet_targets:
       - { src: caddy, dest: "osa/infrastructure/caddy" }
       - { src: logging, dest: "osa/infrastructure/logging" }
@@ -46,7 +46,7 @@
       - { src: worker, dest: "osa/osa-backend" }
       - { src: frontend, dest: "osa/osa-frontend" }
 
-    # Der komplette Stack -- ein einziger Satz Units.
+    # The complete stack -- a single set of units.
     managed_units_safe:
       - podman-prune.timer
       - caddy.service
@@ -55,10 +55,10 @@
       - logging-dozzle.service
 
   tasks:
-    # "development" ist absichtlich NICHT in dieser Liste: lokale
-    # Entwicklung laeuft ueber den Vite-Dev-Server direkt auf der
-    # Dev-Maschine, nie ueber diesen Ansible-Flow -- auch wenn es einer der
-    # vier gueltigen APP_ENVIRONMENT-Werte im Backend selbst ist (siehe
+    # "development" is deliberately NOT in this list: local development
+    # runs via the Vite dev server directly on the dev machine, never
+    # through this Ansible flow -- even though it is one of the four valid
+    # APP_ENVIRONMENT values in the backend itself (see
     # osa-backend/app/core/config.py's _VALID_ENVIRONMENTS).
     - name: app_environment gegen die gueltigen Ansible-Deploy-Stages pruefen
       tags: [always]
@@ -182,9 +182,9 @@
         mode: "0644"
       register: caddy_quadlet_copy
 
-    # Beide Quadlets mit stage-abhaengigem Inhalt (Datenpfad) -- separat
-    # von der generischen Verzeichnis-Kopie oben, da sie gerendert statt
-    # nur kopiert werden muessen.
+    # Both Quadlets have stage-dependent content (data path) -- kept
+    # separate from the generic directory copy above since they must be
+    # rendered rather than just copied.
     - name: "PostgreSQL-Quadlet rendern (Volume-Pfad ist stage-abhaengig)"
       tags: [always]
       ansible.builtin.template:
@@ -201,8 +201,8 @@
         mode: "0644"
       register: valkey_quadlet_render
 
-    # caddy.container's Volume-Mount erwartet die Caddyfile direkt neben
-    # der Quadlet-Definition, siehe quadlets/caddy/caddy.container.
+    # caddy.container's volume mount expects the Caddyfile directly next
+    # to the Quadlet definition, see quadlets/caddy/caddy.container.
     - name: Caddyfile rendern
       tags: [always]
       ansible.builtin.template:
@@ -211,10 +211,10 @@
         mode: "0644"
       register: caddyfile_copy
 
-    # Beide Volume-Quadlets tragen den Stage-Namen im VolumeName= (statt
-    # eines hartcodierten "-prod"), deshalb gerendert statt nur kopiert --
-    # dieselbe Datei landet sonst identisch auf test/qa und benennt deren
-    # Volumes faelschlich "prod".
+    # Both volume Quadlets carry the stage name in VolumeName= (instead of
+    # a hardcoded "-prod"), hence rendered rather than just copied --
+    # otherwise the identical file would also land on test/qa and wrongly
+    # name their volumes "prod".
     - name: "Caddy-Data-Volume-Quadlet rendern (Volume-Name ist stage-abhaengig)"
       tags: [always]
       ansible.builtin.template:
@@ -334,9 +334,9 @@
       ignore_errors: "{{ ansible_check_mode }}"
 
     # ------------------------------------------------------------------
-    # Sofort-Deploy (nur bei explizitem --tags) -- pullt das aktuelle
-    # :latest-Image und startet den betroffenen Pod neu, statt auf den
-    # naechtlichen podman-auto-update.timer zu warten.
+    # Immediate deploy (only with an explicit --tags) -- pulls the current
+    # :latest image and restarts the affected pod, instead of waiting for
+    # the nightly podman-auto-update.timer.
     # ------------------------------------------------------------------
     # podman pull writes its progress (including "Copying blob") to stderr,
     # on every single call, regardless of whether the image actually
@@ -362,12 +362,12 @@
       changed_when: osa_backend_image_id_before.stdout != osa_backend_pull_result.stdout_lines[-1]
 
     - name: "Sofort-Deploy osa-backend: Pod neu starten"
-      # NICHT osa-backend.service direkt neu starten: der Container ist
-      # per generiertem BindsTo= an osa-backend-pod.service gebunden --
-      # ein Container-Restart stoppt dabei den ganzen Pod, aber nichts
-      # startet ihn danach von selbst wieder (empirisch verifiziert). Der
-      # Pod-Service selbst zieht den enthaltenen Container ueber
-      # Wants=/Before= korrekt wieder hoch.
+      # Do NOT restart osa-backend.service directly: the container is
+      # bound to osa-backend-pod.service via a generated BindsTo= -- a
+      # container restart stops the whole pod, but nothing brings it back
+      # up afterward on its own (verified empirically). The pod service
+      # itself correctly pulls the contained container back up via its
+      # Wants=/Before=.
       tags: [never, deploy-backend]
       ansible.builtin.systemd:
         scope: user

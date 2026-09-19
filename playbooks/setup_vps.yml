@@ -318,9 +318,8 @@
     # Gated on a real reboot-required check per distro family: an
     # unconditional reboot here would fire on every re-run against an
     # already-hardened host too (this playbook's own documented purpose,
-    # see README "Re-Run / Verifikation, erwartet quasi kein Diff") -
-    # taking production down on what's supposed to be a safe verification
-    # pass.
+    # see README's "Re-Run / Verifikation" section) - taking production
+    # down on what's supposed to be a safe verification pass.
     # ------------------------------------------------------------------
     - name: Check whether a reboot is required (Debian)
       when: ansible_os_family == "Debian"
