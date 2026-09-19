@@ -38,7 +38,7 @@
     #    an explicit "Network=pasta:..." (osa-backend.pod) and for pods
     #    without their own Network= line (osa-frontend.pod uses the
     #    default). slirp4netns is never used anywhere in this stack and
-    #    is therefore no longer installed.
+    #    is therefore not installed.
     # ------------------------------------------------------------------
     - name: Full upgrade + install core packages (Debian)
       when: ansible_os_family == "Debian"
