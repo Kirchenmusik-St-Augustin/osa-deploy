@@ -55,7 +55,17 @@ Mount=type=tmpfs,target=/tmp,tmpfs-mode=1700
 # chown/setpriv step in the first place, so there is no CAP_CHOWN-needing
 # privilege drop to skip. This same sh -c wrapper is now also what makes
 # the config-file generation above possible in the first place.
-Exec=sh -c 'umask 077 && printf "requirepass %s\nappendonly yes\n" "$VALKEY_PASSWORD" > /tmp/valkey.generated.conf && exec valkey-server /tmp/valkey.generated.conf'
+#
+# The printf conversion is written "%%s" on purpose: Quadlet copies Exec=
+# verbatim into the generated unit's ExecStart=, where systemd expands a
+# single "%s" as its own specifier (the service user's login shell) before
+# the command ever reaches the container -- with "%s" Valkey silently ran
+# with the literal password "/bin/bash" and every client using the real
+# password was rejected. "%%" is systemd's escape for a literal percent
+# sign. "$VALKEY_PASSWORD" needs no such escaping: systemd only substitutes
+# "$VAR" when it is a whole word of its own, and here it sits inside the
+# larger sh -c word, so it reaches the shell untouched.
+Exec=sh -c 'umask 077 && printf "requirepass %%s\nappendonly yes\n" "$VALKEY_PASSWORD" > /tmp/valkey.generated.conf && exec valkey-server /tmp/valkey.generated.conf'
 
 # REDISCLI_AUTH (read by valkey-cli, kept for compatibility with its
 # Redis-derived name) keeps the password out of this process's argv too --
@@ -63,7 +73,11 @@ Exec=sh -c 'umask 077 && printf "requirepass %s\nappendonly yes\n" "$VALKEY_PASS
 # every HealthInterval, so a -a "$VALKEY_PASSWORD" argument would be a
 # recurring, predictable exposure window for the container's entire
 # lifetime, not just a one-time startup one.
-HealthCmd=REDISCLI_AUTH="$VALKEY_PASSWORD" valkey-cli ping || exit 1
+#
+# valkey-cli exits 0 even when the server answers with an error such as
+# NOAUTH or WRONGPASS, so the reply itself has to be checked: only a real
+# PONG proves the configured password is the one the server is running with.
+HealthCmd=REDISCLI_AUTH="$VALKEY_PASSWORD" valkey-cli ping | grep -qx PONG
 HealthInterval=10s
 HealthTimeout=5s
 HealthStartPeriod=10s
