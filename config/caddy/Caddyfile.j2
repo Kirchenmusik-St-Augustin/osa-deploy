@@ -18,9 +18,19 @@
 	}
 }
 
+# Rejects oversized request bodies at the edge with 413, in step with the
+# backend's own limit (MAX_REQUEST_BODY_BYTES, 1 MiB by default). No endpoint
+# accepts uploads.
+(request_body_limit) {
+	request_body {
+		max_size 1MiB
+	}
+}
+
 {% if backend_domain == frontend_domain %}
 {{ backend_domain }} {
 	import security_headers
+	import request_body_limit
 	log
 	basic_auth /logging* {
 		{$LOGGING_USER} {$LOGGING_PASSWORD_HASH}
@@ -55,6 +65,7 @@
 {% else %}
 {{ backend_domain }} {
 	import security_headers
+	import request_body_limit
 	log
 	basic_auth /logging* {
 		{$LOGGING_USER} {$LOGGING_PASSWORD_HASH}
@@ -100,6 +111,7 @@
 # zum Backend). Öffentlich, unauthentifiziert -- reiner Redirect-Dienst.
 {{ shorturl_domain }} {
 	import security_headers
+	import request_body_limit
 	log
 	rewrite * /go{uri}
 	reverse_proxy 127.0.0.1:21000 {
