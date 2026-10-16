@@ -15,24 +15,21 @@ ContainerName=logging-dozzle
 # manual edit.
 Image=docker.io/amir20/dozzle:v11.1.0@sha256:12ce38fbb957f507a39e2d7bb1dc7550f0b0851b030779580404904d2cfe19f3
 
-# SECURITY-ACCEPTED-RISK: this bind-mounts the rootless Podman API socket
-# read-only at the filesystem level, but "ro" only stops Dozzle from
-# replacing the socket file -- it does NOT restrict which API calls Dozzle
-# can make over that socket once connected (create/exec/delete are all
-# still reachable through the API itself). A compromised Dozzle image or a
-# vulnerability in Dozzle gives an attacker full control over every
-# container the "service" user runs, including osa-backend-pg and its
-# mounted secrets -- the exact class of risk this repo already documents
-# and deliberately avoids in systemd-timers/podman-prune.service. Accepted
-# short-term because Dozzle is loopback-only + Caddy basic-auth-gated, not
-# because the risk is small. Follow-up: replace with a read-only API proxy
-# in front of the socket (allow only list/logs/events, deny create/exec/
-# delete/volume-mount) or Dozzle's own agent-mode split, before treating
-# this as closed.
-Volume=%t/podman/podman.sock:/var/run/docker.sock:ro,z
+# Read-only only protects the socket file itself. Every API call is still
+# possible through it, including creating privileged containers. The viewer is
+# therefore reachable only through the authenticated route of the Caddyfile.
+Volume=%t/podman/podman.sock:/var/run/docker.sock:ro
+# On hosts that enforce SELinux a confined container may not connect to the
+# Podman socket, so the label confinement is switched off for this one
+# container. It already holds the whole Podman API through that socket, so the
+# label adds no isolation here. Other hosts have no label enforcement and are
+# unaffected. No relabelling (:z) of the socket: that would change the label of
+# the host's own socket.
+SecurityLabelDisable=true
 
 PublishPort=127.0.0.1:8081:8080
 Environment=DOZZLE_BASE=/logging/dozzle
+Environment=DOZZLE_NO_ANALYTICS=true
 Environment=TZ=Europe/Vienna
 
 ReadOnly=true
