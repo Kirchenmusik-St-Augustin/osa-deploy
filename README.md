@@ -16,8 +16,8 @@ configuration, Podman Quadlets, and (vault-encrypted) secrets.
 | `osa-deploy` (this repo) | Ops: Ansible, Caddy, Quadlets, Secrets | Ansible, systemd Quadlets | doesn't run itself — configures the others |
 
 Both app repos build their own container image via CI/CD (GitHub Actions)
-and push it to `ghcr.io/kirchenmusik-st-augustin/<repo>:latest`
-automatically on every merge to `main`. `osa-deploy` builds **no** images
+and push it to `ghcr.io/kirchenmusik-st-augustin/<repo>:latest` and
+`...:<full commit sha>` automatically on every merge to `main`. `osa-deploy` builds **no** images
 and clones **no** app repos onto the production host — it only distributes
 config and secrets and makes sure the right images are running.
 
@@ -58,8 +58,8 @@ root. A second user `admin` exists only for administrative root tasks
   `Image=ghcr.io/.../<name>:latest` + `AutoUpdate=registry`. Podman's own
   `podman-auto-update.timer` (daily) checks, pulls if needed, and restarts
   — entirely without Ansible. `osa-deploy` is only needed to distribute
-  config/secrets/quadlets initially or on change, and for an immediate
-  deploy (see below).
+  config/secrets/quadlets initially or on change, for an immediate
+  deploy, and to pin a release (see below).
 - **Dozzle** is a read-only log viewer for all running containers,
   reachable at `einteilung.hochamt.at/logging/dozzle` behind basic auth.
 - **podman-prune.timer** triggers a native systemd oneshot service
@@ -86,8 +86,8 @@ period never needs to allow more. Each Quadlet's `StopTimeout=`
 (Podman) and `TimeoutStopSec=` (systemd) build on top of those same
 values with a buffer, so neither Podman nor systemd kills the process
 before its own graceful shutdown had a real chance to finish. See the
-comments in `quadlets/backend/osa-backend.container` and
-`quadlets/worker/osa-backend-worker.container` for the exact numbers and
+comments in `templates/osa-backend.container.j2` and
+`templates/osa-backend-worker.container.j2` for the exact numbers and
 their derivation.
 
 The local dev containers (`dev/quadlets/backend/*.example`) deliberately
@@ -204,9 +204,12 @@ deliberately doesn't manage.
 
 Turns a bare host into a hardened, rootless-Podman-capable one:
 
-- full upgrade + native package install (git, podman, netavark, firewall
-  tooling, ...) straight from the distribution's own repository — no
-  third-party repository added
+- native package install (git, podman, netavark, firewall tooling, ...)
+  straight from the distribution's own repository, no third-party
+  repository added; a full distribution upgrade runs only with
+  `-e full_upgrade=true` (use it on a fresh install), and daily unattended
+  security updates are switched on (Debian and RedHat family; a kernel
+  update still needs a reboot)
 - **checks the installed Podman major version and aborts with a clear
   error if it's too old** (see "Supported distributions" below) — before
   anything else runs
@@ -216,8 +219,11 @@ Turns a bare host into a hardened, rootless-Podman-capable one:
 - **reboots the host partway through** (finalizes kernel/Podman/sysctl
   changes, deliberately before SSH gets hardened)
 - firewall lockdown to SSH/80/443 only
-- **disables root SSH login at the end**, and locks `admin` to key-only
-  login (password auth disabled for that user specifically)
+- **hardens SSH at the end**: key-only login for every account (password
+  and keyboard-interactive login off), root login disabled, at most three
+  authentication attempts, no X11 forwarding. The playbook then reads the
+  effective `sshd` configuration and fails if a file below
+  `/etc/ssh/sshd_config.d/` overrides these settings
 
 See `setup_vps.yml`'s own comments for the full task-by-task rationale.
 
@@ -250,9 +256,9 @@ running this playbook against these: Debian 12, Ubuntu 24.04 LTS (native
 4.9.3), any RHEL-family 9.x release, openSUSE Leap 15.x.
 
 ```bash
-ansible-playbook -i inventory/production.ini playbooks/setup_vps.yml -u root
+ansible-playbook -i inventory/production.ini playbooks/setup_vps.yml -u root -e full_upgrade=true
 # If only password login is possible:
-ansible-playbook -i inventory/production.ini playbooks/setup_vps.yml -u root --ask-pass
+ansible-playbook -i inventory/production.ini playbooks/setup_vps.yml -u root -e full_upgrade=true --ask-pass
 
 # Re-run / verification (root login is disabled afterward):
 ansible-playbook -i inventory/production.ini playbooks/setup_vps.yml -u admin --ask-become-pass --check --diff
@@ -265,9 +271,10 @@ fresh install.
 ## Maintaining secrets
 
 `secrets/<stage>/caddy.env`, `secrets/<stage>/osa-backend.env.j2`,
-`secrets/<stage>/osa-frontend.env.j2`, and `secrets/shared/koofr.yml` live
-`ansible-vault`-encrypted in the repo, never committed in plaintext. The
-matching `*.example` files are the (plaintext-safe) templates.
+`secrets/<stage>/osa-frontend.env.j2`, `secrets/production/koofr.yml` and
+`secrets/nonproduction/koofr.yml` live `ansible-vault`-encrypted in the repo,
+never committed in plaintext. The matching `*.example` files are the
+(plaintext-safe) templates.
 
 Every `secrets/<stage>/` directory carries the same five `.example`
 templates (`caddy.env.example`, `osa-backend-pg.env.example`,
@@ -279,6 +286,11 @@ a stage has an actual target in `inventory/<stage>.ini` (not just a
 `CHANGEME.example.invalid` placeholder): `production` and any stage
 currently being stood up have all five; an unprovisioned stage has none
 yet.
+
+The Koofr credentials sit outside the stage directories, in
+`secrets/production/koofr.yml` and `secrets/nonproduction/koofr.yml` (the
+latter directory is not a stage, it serves `test` and `qa`), each with its
+`.example` template.
 
 The two `.j2` files also contain Jinja2 expressions (`{{ backend_domain }}`
 etc., filled in from `inventory/<stage>.ini`) alongside the real secrets —
@@ -299,20 +311,44 @@ ansible-vault view secrets/<stage>/osa-backend.env.j2
 `secrets/<stage>/caddy.env`'s `LOGGING_USER`/`LOGGING_PASSWORD_HASH` follow
 the same rule as `osa-backend-pg.env` below — generate a fresh password per
 stage, never reuse another stage's, so a leaked non-production Dozzle login
-can't double as a production one.
-`osa-backend.env.j2`'s `KOOFR_USER`/`KOOFR_PASSWORD` are the **same across
-every stage** (one shared Koofr account/backup history), so they aren't
-duplicated into each stage's file at all: `secrets/shared/koofr.yml`
-defines `koofr_user`/`koofr_password` once, and every stage's
-`osa-backend.env.j2` just references `{{ koofr_user }}`/`{{ koofr_password }}`
-— `playbooks/deploy.yml`'s play loads it explicitly via `vars_files:`, so
-nothing needs filling in per stage. Rotating the Koofr password is a
-single edit:
+can't double as a production one. Dozzle holds the Podman API socket, so its
+login is as sensitive as the stage's secrets. Access can additionally be
+limited to networks with the optional inventory variable
+`logging_allowed_cidrs`, a list set in the stage's `[vps:vars]`, for example
+`logging_allowed_cidrs=["203.0.113.0/24"]`. A client outside the list gets
+`403` before any credential is examined; without the variable the viewer is
+reachable from anywhere behind the basic-auth login. Keep the list as small
+as possible.
+`osa-backend.env.j2`'s `KOOFR_USER`/`KOOFR_PASSWORD` come from two vault
+files, so that no host holds more access than it needs:
+
+- `secrets/production/koofr.yml`: the account that owns the backup folder.
+  Production writes the nightly dumps with it and prunes old ones.
+- `secrets/nonproduction/koofr.yml`: a second account that can only **read**
+  the production backup folder. `test` and `qa` use it, because they only
+  download the latest production backup (`downsync`); a compromised host
+  there must not be able to read, overwrite or delete the backups.
+
+`playbooks/deploy.yml` loads the matching file via `vars_files:` and stops
+with a message if it is missing, so every stage's `osa-backend.env.j2` just
+references `{{ koofr_user }}`/`{{ koofr_password }}` and nothing needs filling
+in per stage. Set the read-only account up once: create a second Koofr
+account, share the backup folder with it read-only, and check in that
+account that listing and downloading work, that uploading and deleting are
+refused, and under which WebDAV path the shared folder appears (that path
+goes into `KOOFR_BACKUP_PATH` of the `test`/`qa` `osa-backend.env.j2`). Then:
 ```bash
-ansible-vault edit secrets/shared/koofr.yml
+cp secrets/nonproduction/koofr.yml.example secrets/nonproduction/koofr.yml
+$EDITOR secrets/nonproduction/koofr.yml
+ansible-vault encrypt secrets/nonproduction/koofr.yml
+```
+Rotating a Koofr password is a single edit of the matching file:
+```bash
+ansible-vault edit secrets/production/koofr.yml      # or secrets/nonproduction/koofr.yml
 ```
 `scripts/backup_db.py`/`restore_db.py` (see "Disaster recovery" below)
-always see the same backup history regardless of stage. `SMTP_*` should stay
+see the same backup history regardless of stage (non-production stages
+through the read-only share). `SMTP_*` should stay
 commented out on non-production stages (no mail sending outside prod) --
 `SMTP_PORT` is int-typed, so a blank value fails startup validation; only a
 commented-out key counts as unset.
@@ -334,6 +370,50 @@ cp secrets/<stage>/osa-backend-valkey.env.example secrets/<stage>/osa-backend-va
 $EDITOR secrets/<stage>/osa-backend-valkey.env
 ansible-vault encrypt secrets/<stage>/osa-backend-valkey.env
 ```
+
+### Database roles
+
+Every stage's PostgreSQL has two roles. `POSTGRES_USER` in
+`osa-backend-pg.env` (`osa`) is the cluster bootstrap role: always a
+superuser, for administration only. The backend and the worker connect as
+`osa_app`, a role without superuser rights that owns the application
+database, so a flaw in the application cannot reach `COPY ... PROGRAM`,
+server-side files or role management.
+
+Nobody creates the role by hand. Every `deploy.yml` run applies
+`config/postgres/split-app-role.sql` inside the database container, after
+the stack is up and before the pod restart: it creates the role, sets the
+password from `DATABASE_URL` in `osa-backend.env.j2` and moves the ownership
+of everything in the `public` schema to it. The user in `DATABASE_URL` must
+be `osa_app` and the password a freshly generated value of at least 16
+characters from `A-Za-z0-9._~-` (it is used in the URL without escaping),
+different from `POSTGRES_PASSWORD`. Any other user or password stops the
+deploy before anything is changed, also under `--check`. A rotated password
+in `DATABASE_URL` reaches the role with the next deploy.
+
+**Switching an existing stage** (production's database was created with the
+bootstrap role as the owner of everything):
+
+1. Take a fresh backup (`podman exec osa-backend python scripts/backup_db.py`)
+   and make sure no session of the bootstrap role is open on the application
+   database.
+2. Make sure the running `osa-backend` image already restores with
+   `--no-owner --no-acl`; otherwise the nightly refresh of non-production
+   stages and a manual restore fail with ownership errors once the
+   application role owns the database.
+3. `ansible-vault edit secrets/<stage>/osa-backend.env.j2`: set `DATABASE_URL`
+   to the user `osa_app` and a new generated password.
+4. `deploy.yml --check --diff`, then apply. The role is set up first, then
+   the changed env file restarts the backend pod, which now connects as
+   `osa_app`.
+5. Verify: `podman exec osa-backend-pg sh -c 'psql -U "$POSTGRES_USER" -d
+   "$POSTGRES_DB" -Atc "select usename, count(*) from pg_stat_activity where
+   datname = current_database() and pid <> pg_backend_pid() group by 1"'`
+   lists `osa_app` only, and the application works.
+
+The playbook insists on `osa_app`, so there is no switch back through it; a
+manual fallback is the `DATABASE_URL` line in `~/.env/osa-backend.env` on the
+host plus a restart of the pod.
 
 ### Standing up test/qa: permanent stage vs. one-off smoke test
 
@@ -387,6 +467,14 @@ database is empty right after this — see "Fresh or empty Postgres data
 directory" below for the one extra step that gets you a working, populated
 system instead of an empty login screen.
 
+A changed secret file restarts exactly the units that read it: `caddy.env`
+restarts Caddy, `osa-backend.env`, `osa-backend-pg.env` and
+`osa-backend-valkey.env` restart the backend pod (backend, worker,
+PostgreSQL, Valkey), `osa-frontend.env` restarts the frontend pod. A new
+`POSTGRES_PASSWORD` is not enough on its own: the PostgreSQL image applies
+it only when it initialises an empty data directory, so an existing
+database also needs `ALTER ROLE` (interactive step).
+
 ### Immediate deploy (instead of waiting for the nightly auto-update run)
 
 ```bash
@@ -394,7 +482,45 @@ ansible-playbook -i inventory/production.ini playbooks/deploy.yml --ask-vault-pa
 ansible-playbook -i inventory/production.ini playbooks/deploy.yml --ask-vault-pass --tags deploy-frontend
 ```
 
-Pulls the current `:latest` image and restarts the corresponding pod.
+Pulls the image tag the Quadlet uses (`latest` unless the release is pinned,
+see below) and restarts the corresponding pod.
+
+### Pin a release (hold back or roll back an image)
+
+The app Quadlets are rendered from `templates/osa-backend.container.j2`,
+`templates/osa-backend-worker.container.j2` and
+`templates/osa-frontend.container.j2`. The image tag comes from two optional
+variables and defaults to `latest`, so nothing changes until one is set:
+
+| Variable | Containers | Value |
+|---|---|---|
+| `osa_backend_image_tag` | `osa-backend` and `osa-backend-worker` together | full commit SHA of a release in `osa-backend` |
+| `osa_frontend_image_tag` | `osa-frontend` | full commit SHA of a release in `osa-frontend` |
+
+Backend and worker share one variable on purpose: a worker must never run
+against a schema that the web container (the only one that migrates) has not
+migrated, or the reverse.
+
+The commit SHA is the tag CI pushes next to `latest`; the commit list of
+`main` and the package page of the repository on GitHub show it (the copy
+button next to a commit gives the full SHA). To roll back, take the merge
+commit before the faulty one. Preview first, then apply:
+
+```bash
+ansible-playbook -i inventory/production.ini playbooks/deploy.yml --ask-vault-pass --check --diff -e osa_backend_image_tag=<full-commit-sha>
+ansible-playbook -i inventory/production.ini playbooks/deploy.yml --ask-vault-pass -e osa_backend_image_tag=<full-commit-sha>
+```
+
+The changed Quadlet makes the playbook restart the pod. The nightly
+auto-update does not override a pin, because the tag of a commit SHA never
+changes. A pin given with `-e` holds for this run only: a later run without
+it goes back to `latest`. For a lasting pin, add the variable under
+`[vps:vars]` of the stage's inventory file (for example
+`osa_backend_image_tag=<full-commit-sha>`) and remove the line again once the
+fix is released. `grep image_tag inventory/*.ini` shows whether a pin is
+still active; while it is, the service stays on that version unnoticed.
+Pinning an older release does not undo database migrations the newer release
+already applied.
 
 ## Disaster recovery / database restore
 
@@ -466,6 +592,11 @@ window), either pre-pull again immediately before starting the service, or
 `systemctl --user stop podman-prune.timer` for the gap and re-enable it
 afterward.
 
+The application role `osa_app` lives inside the data directory too, so an
+empty one has none: the backend cannot log in, and a restore cannot run,
+until the next `deploy.yml` run has set the role up (see "Database roles"
+under "Maintaining secrets").
+
 Either way, the database that comes up is schema-migrated but **empty** —
 alembic creates the tables, it doesn't seed any rows. On a non-production
 stage, get a working system with real data by pulling down the latest
@@ -517,6 +648,7 @@ conveniences). Only backend and frontend get Quadlets:
 | `dev/quadlets/backend/osa-backend-dev.build.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend-dev.build` | Builds `localhost/osa-backend-dev:latest` from `osa-backend`'s own `Dockerfile`, `dev` target |
 | `dev/quadlets/backend/osa-backend.container.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend.container` | Runs the backend, bind-mounts the repo, `uvicorn --reload` |
 | `dev/quadlets/backend/osa-backend-pg.container.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend-pg.container` | Dev's own PostgreSQL, separate from every Ansible-managed stage's |
+| `dev/postgres-init/10-app-role.sh` | (mounted in place, not copied) | Creates the non-superuser role `osa_app` on the first start with an empty Postgres data directory |
 | `dev/quadlets/backend/osa-backend-valkey.container.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend-valkey.container` | Dev's own Valkey queue backend for the arq worker below |
 | `dev/quadlets/backend/osa-backend-worker.container.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend-worker.container` | Runs the arq job worker, bind-mounts the repo, `--watch` reload |
 | `dev/quadlets/backend/osa-backend.pod.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend.pod` | Publishes backend/Postgres ports, pod-wide settings |
@@ -562,7 +694,8 @@ directory`) if it's absent.
 
 Edit each `~/.env/*.env` file next: fill in `<your-dev-domain>`,
 `<your-shorturl-domain>`, `SECRET_KEY`, `POSTGRES_PASSWORD`,
-`DATABASE_URL`'s password, `VALKEY_PASSWORD` (matching value in both
+`OSA_APP_PASSWORD` (a different value; it is also the password in
+`DATABASE_URL` and `TEST_DATABASE_URL`), `VALKEY_PASSWORD` (matching value in both
 `osa-backend.env` and `osa-backend-valkey.env`), and optionally
 `GOOGLE_CLIENT_ID`/`KOOFR_USER`/`KOOFR_PASSWORD`. Then:
 
@@ -591,9 +724,13 @@ Your host's Caddy
 Append `dev/Caddyfile.dev.example`'s two vhost blocks to your own Caddyfile
 (location depends on how Caddy is installed on your machine — see Caddy's
 own docs for the default path on your platform), replace
-`<your-dev-domain>`/`<your-shorturl-domain>`, then reload Caddy. The
-`<your-shorturl-domain>` vhost is optional, only needed for local
-short-URL redirect testing.
+`<your-dev-domain>`/`<your-shorturl-domain>`/`<your-allowed-cidrs>`, then
+reload Caddy. `<your-allowed-cidrs>` lists the networks that may reach the
+dev stage; everyone else gets `403`. Do not leave the dev vhost open: the
+dev database is refreshed from a production snapshot and the Vite dev
+server serves source files. The `<your-shorturl-domain>` vhost is
+optional, only needed for local short-URL redirect testing, and stays
+public because it is only a redirect service.
 
 ### First start: build, migrate, get a working login
 
@@ -617,10 +754,10 @@ podman exec -it osa-backend python scripts/restore_db.py
 ```
 
 (No `--force` needed — that flag only guards `APP_ENVIRONMENT=production`.)
-This needs working `KOOFR_USER`/`KOOFR_PASSWORD` in `~/.env/osa-backend.env`
-— retrieve the shared value with
-`ansible-vault view secrets/shared/koofr.yml` (vault password needed) if
-you don't have it yet.
+This needs working `KOOFR_USER`/`KOOFR_PASSWORD` in `~/.env/osa-backend.env`;
+retrieve the read-only account with
+`ansible-vault view secrets/nonproduction/koofr.yml` (vault password
+needed) if you don't have it yet.
 
 Finally, `osa-frontend`'s Quadlet does not run `npm install` for you —
 `node_modules` lives inside the bind-mounted repo on the host, so it must
@@ -663,12 +800,38 @@ notes:
   — not part of production's env template at all. Its database (`osa_test`
   by default) is a separate database on the same Postgres server, not just
   a separate table set — create it once before the first test run:
-  `podman exec osa-backend-pg psql -U osa -d osa -c "CREATE DATABASE osa_test OWNER osa;"`
+  `podman exec osa-backend-pg psql -U osa -d osa -c "CREATE DATABASE osa_test OWNER osa_app;"`
   (schema/tables come from `osa-backend`'s own test suite running the real
   Alembic migrations on first use, no separate migration step needed here).
 - SMTP is optional. Point `SMTP_HOST`/`SMTP_PORT` at any local
   SMTP-capturing tool you like, or leave both commented out — mail sending
   then just fails silently, same as every other non-production stage.
+- The dev Postgres has two roles. `POSTGRES_USER` (`osa`) is the cluster
+  bootstrap role: always a superuser, for administration only. The backend
+  connects as `osa_app` (`OSA_APP_PASSWORD`), a non-superuser role that owns
+  the database, so a flaw in the application cannot reach `COPY ... PROGRAM`,
+  server-side files or role management. `dev/postgres-init/10-app-role.sh`
+  creates it, but init scripts only run on an empty data directory. An
+  existing dev database is switched once with the same script the deployed
+  stages use (choose the password, then put it into `OSA_APP_PASSWORD` and
+  the two database URLs), run from the root of this repository:
+
+  ```bash
+  OSA_APP_PASSWORD='<OSA_APP_PASSWORD>' podman exec -i -e OSA_APP_PASSWORD osa-backend-pg \
+      sh -c 'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -v ON_ERROR_STOP=1' \
+      < config/postgres/split-app-role.sql
+  ```
+
+  The script is idempotent and moves the ownership of every object in the
+  `public` schema, which `REASSIGN OWNED BY osa` cannot do: the bootstrap
+  role also owns the system databases, which PostgreSQL refuses to
+  reassign. Restart the
+  backend and the worker afterwards. A restore from a backup (including the
+  nightly refresh of non-production stages) wipes the `public` schema first
+  and terminates every other session of the database; PostgreSQL does not
+  let `osa_app` terminate a session of the bootstrap role, so do not keep
+  one open on the application database during a restore (use the `postgres`
+  database for administration).
 
 ---
 
@@ -690,7 +853,8 @@ Podman-Quadlets und (vault-verschlüsselte) Secrets.
 
 Beide App-Repos bauen ihr Container-Image selbst per CI/CD (GitHub Actions)
 und pushen es bei jedem Merge nach `main` automatisch nach
-`ghcr.io/kirchenmusik-st-augustin/<repo>:latest`. `osa-deploy` baut **keine**
+`ghcr.io/kirchenmusik-st-augustin/<repo>:latest` und
+`...:<voller Commit-SHA>`. `osa-deploy` baut **keine**
 Images und klont **keine** App-Repos auf den Produktionshost — es verteilt
 nur Config und Secrets und sorgt dafür, dass die richtigen Images laufen.
 
@@ -731,7 +895,8 @@ administrative Root-Aufgaben (`sudo`), er betreibt selbst keine Container.
   + `AutoUpdate=registry`. Podmans eigener `podman-auto-update.timer`
   (täglich) prüft, pullt bei Bedarf und startet neu — ganz ohne Ansible.
   `osa-deploy` wird nur gebraucht, um Config/Secrets/Quadlets initial bzw.
-  bei Änderungen zu verteilen, und für einen Sofort-Deploy (siehe unten).
+  bei Änderungen zu verteilen, für einen Sofort-Deploy und um ein Release
+  zu pinnen (siehe unten).
 - **Dozzle** ist ein schreibgeschützter Log-Viewer für alle laufenden
   Container, erreichbar über `einteilung.hochamt.at/logging/dozzle` hinter
   Basic-Auth.
@@ -761,8 +926,8 @@ nicht mehr erlauben. Das `StopTimeout=` (Podman) und `TimeoutStopSec=`
 (systemd) jeder Quadlet-Datei bauen mit Puffer auf genau diesen Werten
 auf, damit weder Podman noch systemd den Prozess killt, bevor sein eigenes
 Graceful Shutdown wirklich fertig werden konnte. Die exakten Zahlen samt
-Herleitung stehen als Kommentar in `quadlets/backend/osa-backend.container`
-und `quadlets/worker/osa-backend-worker.container`.
+Herleitung stehen als Kommentar in `templates/osa-backend.container.j2`
+und `templates/osa-backend-worker.container.j2`.
 
 Die lokalen Dev-Container (`dev/quadlets/backend/*.example`) bleiben
 bewusst ohne diese Härtung — ein Wegwerf-Hot-Reload-Container ist keine
@@ -884,9 +1049,13 @@ Repo bewusst nicht verwaltet.
 Macht aus einem nackten Host ein gehärtetes, rootless-Podman-fähiges
 System:
 
-- Vollupgrade + native Paketinstallation (git, podman, netavark,
-  Firewall-Tooling, ...) direkt aus dem eigenen Repository der Distribution
-  — kein Drittanbieter-Repo wird eingerichtet
+- native Paketinstallation (git, podman, netavark, Firewall-Tooling, ...)
+  direkt aus dem eigenen Repository der Distribution, kein
+  Drittanbieter-Repo wird eingerichtet; ein vollständiges Distributions-
+  Upgrade läuft nur mit `-e full_upgrade=true` (bei einer Neuinstallation
+  verwenden), und tägliche automatische Sicherheitsupdates werden
+  eingeschaltet (Debian- und RedHat-Familie; ein Kernel-Update braucht
+  weiterhin einen Neustart)
 - **prüft die installierte Podman-Major-Version und bricht bei einer zu
   alten Version mit klarer Fehlermeldung ab** (siehe "Unterstützte
   Distributionen" unten) — bevor irgendetwas anderes läuft
@@ -896,8 +1065,11 @@ System:
 - **startet den Host mittendrin neu** (finalisiert Kernel-/Podman-/
   Sysctl-Änderungen, bewusst vor der SSH-Härtung)
 - Firewall-Lockdown auf nur noch SSH/80/443
-- **deaktiviert root-SSH-Login am Ende** und sperrt `admin` speziell auf
-  Key-only (Passwort-Login für diesen User gezielt deaktiviert)
+- **härtet SSH am Ende**: Key-only-Login für jeden Account (Passwort- und
+  Keyboard-Interactive-Login aus), root-Login deaktiviert, höchstens drei
+  Anmeldeversuche, kein X11-Forwarding. Danach liest das Playbook die
+  wirksame `sshd`-Konfiguration und bricht ab, falls eine Datei unter
+  `/etc/ssh/sshd_config.d/` diese Einstellungen überschreibt
 
 Die vollständige Task-für-Task-Begründung steht in `setup_vps.yml`s
 eigenen Kommentaren.
@@ -933,9 +1105,9 @@ neu aufsetzen statt gegen diese laufen zu lassen: Debian 12, Ubuntu 24.04
 LTS (nativ 4.9.3), jedes RHEL-Familie-9.x-Release, openSUSE Leap 15.x.
 
 ```bash
-ansible-playbook -i inventory/production.ini playbooks/setup_vps.yml -u root
+ansible-playbook -i inventory/production.ini playbooks/setup_vps.yml -u root -e full_upgrade=true
 # Falls nur Passwort-Login moeglich ist:
-ansible-playbook -i inventory/production.ini playbooks/setup_vps.yml -u root --ask-pass
+ansible-playbook -i inventory/production.ini playbooks/setup_vps.yml -u root -e full_upgrade=true --ask-pass
 
 # Re-Run / Verifikation (root-Login ist danach deaktiviert):
 ansible-playbook -i inventory/production.ini playbooks/setup_vps.yml -u admin --ask-become-pass --check --diff
@@ -948,8 +1120,9 @@ zur Neuinstallation.
 ## Secrets pflegen
 
 `secrets/<stage>/caddy.env`, `secrets/<stage>/osa-backend.env.j2`,
-`secrets/<stage>/osa-frontend.env.j2` und `secrets/shared/koofr.yml` liegen
-`ansible-vault`-verschlüsselt im Repo, nie im Klartext committet. Die
+`secrets/<stage>/osa-frontend.env.j2`, `secrets/production/koofr.yml` und
+`secrets/nonproduction/koofr.yml` liegen `ansible-vault`-verschlüsselt im
+Repo, nie im Klartext committet. Die
 passenden `*.example`-Dateien sind die (Klartext-sicheren) Vorlagen.
 
 Jedes `secrets/<stage>/`-Verzeichnis führt dieselben fünf
@@ -963,6 +1136,11 @@ entstehen erst, sobald eine Stage ein tatsächliches Ziel in
 `CHANGEME.example.invalid`-Platzhalter): `production` und jede gerade
 aufgesetzte Stage haben alle fünf, eine noch nicht bereitgestellte Stage
 noch keine.
+
+Die Koofr-Zugangsdaten liegen außerhalb der Stage-Verzeichnisse, in
+`secrets/production/koofr.yml` und `secrets/nonproduction/koofr.yml` (das
+zweite Verzeichnis ist keine Stage, es bedient `test` und `qa`), jeweils mit
+ihrer `.example`-Vorlage.
 
 Die beiden `.j2`-Dateien enthalten zusätzlich Jinja2-Ausdrücke
 (`{{ backend_domain }}` etc., befüllt aus `inventory/<stage>.ini`) neben
@@ -985,20 +1163,46 @@ ansible-vault view secrets/<stage>/osa-backend.env.j2
 derselben Regel wie `osa-backend-pg.env` unten — pro Stage ein frisches
 Passwort generieren, niemals das einer anderen Stage wiederverwenden, damit
 ein geleakter Nicht-Produktions-Dozzle-Login nicht auch als
-Produktions-Login funktioniert.
-`osa-backend.env.j2`s `KOOFR_USER`/`KOOFR_PASSWORD` sind **über alle Stages
-hinweg gleich** (ein gemeinsames Koofr-Konto/Backup-Bestand), stehen deshalb
-gar nicht mehr dupliziert in jeder Stage-Datei: `secrets/shared/koofr.yml`
-definiert `koofr_user`/`koofr_password` genau einmal, jede Stage-Datei
-referenziert nur noch `{{ koofr_user }}`/`{{ koofr_password }}` —
-`playbooks/deploy.yml`s Play lädt sie explizit per `vars_files:`, es muss
-also pro Stage nichts mehr ausgefüllt werden. Eine Passwort-Rotation ist
-damit ein einziger Edit:
+Produktions-Login funktioniert. Dozzle hält den Podman-API-Socket, sein Login
+ist daher so sensibel wie die Secrets der Stage. Der Zugriff lässt sich
+zusätzlich mit der optionalen Inventory-Variable `logging_allowed_cidrs` auf
+Netze beschränken, eine Liste in den `[vps:vars]` der Stage, zum Beispiel
+`logging_allowed_cidrs=["203.0.113.0/24"]`. Ein Client außerhalb der Liste
+bekommt `403`, bevor Zugangsdaten geprüft werden; ohne die Variable ist der
+Viewer hinter dem Basic-Auth-Login von überall erreichbar. Die Liste so klein
+wie möglich halten.
+`KOOFR_USER`/`KOOFR_PASSWORD` der `osa-backend.env.j2` stammen aus zwei
+Vault-Dateien, damit kein Host mehr Zugriff hat, als er braucht:
+
+- `secrets/production/koofr.yml`: das Konto, dem der Backup-Ordner gehört.
+  Production schreibt damit die nächtlichen Dumps und räumt alte auf.
+- `secrets/nonproduction/koofr.yml`: ein zweites Konto, das den
+  Backup-Ordner von Production nur **lesen** kann. `test` und `qa` nutzen es,
+  weil sie nur das jüngste Production-Backup herunterladen (`downsync`); ein
+  kompromittierter Host dort darf die Backups weder lesen, überschreiben noch
+  löschen.
+
+`playbooks/deploy.yml` lädt die passende Datei per `vars_files:` und bricht
+mit einer Meldung ab, wenn sie fehlt; jede Stage-`osa-backend.env.j2`
+referenziert nur `{{ koofr_user }}`/`{{ koofr_password }}`, pro Stage muss
+nichts ausgefüllt werden. Das Lese-Konto richtest du einmal ein: zweites
+Koofr-Konto anlegen, den Backup-Ordner schreibgeschützt mit ihm teilen und in
+diesem Konto prüfen, dass Auflisten und Herunterladen funktionieren, Hochladen
+und Löschen abgelehnt werden und unter welchem WebDAV-Pfad der geteilte
+Ordner erscheint (dieser Pfad kommt als `KOOFR_BACKUP_PATH` in die
+`osa-backend.env.j2` von `test`/`qa`). Dann:
 ```bash
-ansible-vault edit secrets/shared/koofr.yml
+cp secrets/nonproduction/koofr.yml.example secrets/nonproduction/koofr.yml
+$EDITOR secrets/nonproduction/koofr.yml
+ansible-vault encrypt secrets/nonproduction/koofr.yml
+```
+Eine Koofr-Passwort-Rotation ist ein einziger Edit der passenden Datei:
+```bash
+ansible-vault edit secrets/production/koofr.yml      # oder secrets/nonproduction/koofr.yml
 ```
 `scripts/backup_db.py`/`restore_db.py` (siehe "Disaster Recovery" unten)
-greifen so stageunabhängig auf denselben Backup-Bestand zu. `SMTP_*` sollte
+greifen so stageunabhängig auf denselben Backup-Bestand zu (Non-Production-
+Stages über die Lese-Freigabe). `SMTP_*` sollte
 auf Non-Prod-Stages auskommentiert bleiben (kein Mailversand außerhalb von
 Prod) — `SMTP_PORT` ist int-typisiert, ein leerer Wert scheitert beim Start
 an der Validierung; nur ein auskommentierter Schlüssel zählt als unset.
@@ -1021,6 +1225,51 @@ cp secrets/<stage>/osa-backend-valkey.env.example secrets/<stage>/osa-backend-va
 $EDITOR secrets/<stage>/osa-backend-valkey.env
 ansible-vault encrypt secrets/<stage>/osa-backend-valkey.env
 ```
+
+### Datenbank-Rollen
+
+Das PostgreSQL jeder Stage hat zwei Rollen. `POSTGRES_USER` in
+`osa-backend-pg.env` (`osa`) ist die Bootstrap-Rolle des Clusters: immer
+Superuser, nur für die Administration. Backend und Worker verbinden sich als
+`osa_app`, eine Rolle ohne Superuser-Rechte, der die Anwendungsdatenbank
+gehört; ein Fehler in der Anwendung erreicht so weder `COPY ... PROGRAM`
+noch Server-Dateien oder die Rollenverwaltung.
+
+Die Rolle legt niemand von Hand an. Jeder `deploy.yml`-Lauf wendet
+`config/postgres/split-app-role.sql` im Datenbank-Container an, nachdem der
+Stack läuft und bevor der Pod neu startet: Es legt die Rolle an, setzt das
+Passwort aus `DATABASE_URL` in der `osa-backend.env.j2` und überträgt ihr den
+Besitz von allem im Schema `public`. Der Benutzer in `DATABASE_URL` muss
+`osa_app` sein, das Passwort ein neu generierter Wert mit mindestens 16
+Zeichen aus `A-Za-z0-9._~-` (es steht ohne Escaping in der URL) und ein
+anderer als `POSTGRES_PASSWORD`. Jeder andere Benutzer oder jedes andere
+Passwort stoppt den Deploy, bevor etwas geändert wird, auch unter `--check`.
+Ein rotiertes Passwort in `DATABASE_URL` erreicht die Rolle mit dem nächsten
+Deploy.
+
+**Bestehende Stage umstellen** (die Produktions-Datenbank wurde mit der
+Bootstrap-Rolle als Besitzer von allem angelegt):
+
+1. Frisches Backup ziehen (`podman exec osa-backend python scripts/backup_db.py`)
+   und sicherstellen, dass keine Sitzung der Bootstrap-Rolle auf der
+   Anwendungsdatenbank offen ist.
+2. Sicherstellen, dass das laufende `osa-backend`-Image schon mit
+   `--no-owner --no-acl` wiederherstellt; sonst scheitern die nächtliche
+   Auffrischung der Non-Production-Stages und ein manueller Restore mit
+   Besitzer-Fehlern, sobald die Anwendungsrolle die Datenbank besitzt.
+3. `ansible-vault edit secrets/<stage>/osa-backend.env.j2`: `DATABASE_URL`
+   auf den Benutzer `osa_app` und ein neu generiertes Passwort setzen.
+4. `deploy.yml --check --diff`, dann anwenden. Zuerst wird die Rolle
+   eingerichtet, dann startet die geänderte Env-Datei den Backend-Pod neu,
+   der sich nun als `osa_app` verbindet.
+5. Prüfen: `podman exec osa-backend-pg sh -c 'psql -U "$POSTGRES_USER" -d
+   "$POSTGRES_DB" -Atc "select usename, count(*) from pg_stat_activity where
+   datname = current_database() and pid <> pg_backend_pid() group by 1"'`
+   listet nur `osa_app`, und die Anwendung funktioniert.
+
+Das Playbook besteht auf `osa_app`, einen Rückweg über es gibt es also nicht;
+manuell hilft die Zeile `DATABASE_URL` in `~/.env/osa-backend.env` auf dem
+Host plus ein Neustart des Pods.
 
 ### test/qa aufsetzen: dauerhafte Stage vs. Wegwerf-Smoke-Test
 
@@ -1076,6 +1325,15 @@ Postgres-Datenverzeichnis" unten für den einen zusätzlichen Schritt, der
 statt eines leeren Login-Screens ein funktionierendes, befülltes System
 liefert.
 
+Eine geänderte Secret-Datei startet genau die Units neu, die sie lesen:
+`caddy.env` startet Caddy neu, `osa-backend.env`, `osa-backend-pg.env` und
+`osa-backend-valkey.env` starten den Backend-Pod neu (Backend, Worker,
+PostgreSQL, Valkey), `osa-frontend.env` startet den Frontend-Pod neu. Ein
+neues `POSTGRES_PASSWORD` reicht allein nicht: Das PostgreSQL-Image wendet
+es nur beim Initialisieren eines leeren Datenverzeichnisses an, eine
+bestehende Datenbank braucht zusätzlich `ALTER ROLE` (interaktiver
+Schritt).
+
 ### Sofort-Deploy (statt auf den nächtlichen Auto-Update-Lauf zu warten)
 
 ```bash
@@ -1083,7 +1341,48 @@ ansible-playbook -i inventory/production.ini playbooks/deploy.yml --ask-vault-pa
 ansible-playbook -i inventory/production.ini playbooks/deploy.yml --ask-vault-pass --tags deploy-frontend
 ```
 
-Pullt das aktuelle `:latest`-Image und startet den zugehörigen Pod neu.
+Pullt das Image-Tag, das die Quadlet verwendet (`latest`, solange kein
+Release gepinnt ist, siehe unten), und startet den zugehörigen Pod neu.
+
+### Release pinnen (Image zurückhalten oder zurückrollen)
+
+Die App-Quadlets werden aus `templates/osa-backend.container.j2`,
+`templates/osa-backend-worker.container.j2` und
+`templates/osa-frontend.container.j2` gerendert. Das Image-Tag kommt aus
+zwei optionalen Variablen und ist standardmäßig `latest`, es ändert sich
+also nichts, solange keine gesetzt ist:
+
+| Variable | Container | Wert |
+|---|---|---|
+| `osa_backend_image_tag` | `osa-backend` und `osa-backend-worker` gemeinsam | voller Commit-SHA eines Releases in `osa-backend` |
+| `osa_frontend_image_tag` | `osa-frontend` | voller Commit-SHA eines Releases in `osa-frontend` |
+
+Backend und Worker teilen sich absichtlich eine Variable: Ein Worker darf
+nie gegen ein Schema laufen, das der Web-Container (der einzige, der
+migriert) noch nicht migriert hat, und umgekehrt.
+
+Der Commit-SHA ist das Tag, das die CI neben `latest` pusht; die Commit-Liste
+von `main` und die Paketseite des Repositories auf GitHub zeigen ihn (der
+Kopieren-Knopf neben einem Commit liefert den vollen SHA). Für einen
+Rollback nimmst du den Merge-Commit vor dem fehlerhaften. Erst die Vorschau,
+dann anwenden:
+
+```bash
+ansible-playbook -i inventory/production.ini playbooks/deploy.yml --ask-vault-pass --check --diff -e osa_backend_image_tag=<voller-commit-sha>
+ansible-playbook -i inventory/production.ini playbooks/deploy.yml --ask-vault-pass -e osa_backend_image_tag=<voller-commit-sha>
+```
+
+Die geänderte Quadlet veranlasst das Playbook, den Pod neu zu starten. Das
+nächtliche Auto-Update überschreibt einen Pin nicht, weil das Tag eines
+Commit-SHA sich nie ändert. Ein Pin mit `-e` gilt nur für diesen Lauf: Ein
+späterer Lauf ohne `-e` geht zurück auf `latest`. Für einen dauerhaften Pin
+trägst du die Variable unter `[vps:vars]` der Inventory-Datei der Stage ein
+(zum Beispiel `osa_backend_image_tag=<voller-commit-sha>`) und entfernst die
+Zeile wieder, sobald der Fix veröffentlicht ist. `grep image_tag
+inventory/*.ini` zeigt, ob noch ein Pin aktiv ist; solange er es ist, bleibt
+der Dienst unbemerkt auf dieser Version. Ein Pin auf ein älteres Release
+macht Datenbank-Migrationen nicht rückgängig, die das neuere Release schon
+angewendet hat.
 
 ## Disaster Recovery / Datenbank-Restore
 
@@ -1160,6 +1459,11 @@ wird), entweder unmittelbar vor dem Start erneut pullen, oder für die
 Zwischenzeit `systemctl --user stop podman-prune.timer` setzen und danach
 wieder aktivieren.
 
+Die Anwendungsrolle `osa_app` liegt ebenfalls im Datenverzeichnis, ein
+leeres hat sie also nicht: Das Backend kann sich nicht anmelden und ein
+Restore nicht laufen, bis der nächste `deploy.yml`-Lauf die Rolle
+eingerichtet hat (siehe „Datenbank-Rollen“ unter „Secrets pflegen“).
+
 So oder so kommt die Datenbank danach schema-migriert, aber **leer** hoch —
 alembic legt die Tabellen an, befüllt aber keine Zeile. Auf einer
 Nicht-Production-Stage kommt man mit dem letzten Production-Backup zu einem
@@ -1215,6 +1519,7 @@ reine Prod-Annehmlichkeiten). Nur Backend und Frontend bekommen Quadlets:
 | `dev/quadlets/backend/osa-backend-dev.build.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend-dev.build` | Baut `localhost/osa-backend-dev:latest` aus `osa-backend`s eigenem `Dockerfile`, Target `dev` |
 | `dev/quadlets/backend/osa-backend.container.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend.container` | Startet das Backend, mountet das Repo, `uvicorn --reload` |
 | `dev/quadlets/backend/osa-backend-pg.container.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend-pg.container` | Eigenes Dev-PostgreSQL, getrennt von jeder Ansible-verwalteten Stage |
+| `dev/postgres-init/10-app-role.sh` | (direkt eingehängt, nicht kopiert) | Legt beim ersten Start mit leerem Postgres-Datenverzeichnis die Nicht-Superuser-Rolle `osa_app` an |
 | `dev/quadlets/backend/osa-backend-valkey.container.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend-valkey.container` | Eigener Dev-Valkey-Queue-Backend für den arq-Worker unten |
 | `dev/quadlets/backend/osa-backend-worker.container.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend-worker.container` | Startet den arq-Job-Worker, mountet das Repo, `--watch`-Reload |
 | `dev/quadlets/backend/osa-backend.pod.example` | `~/.config/containers/systemd/osa/osa-backend/osa-backend.pod` | Veröffentlicht Backend-/Postgres-Ports, Pod-weite Einstellungen |
@@ -1260,8 +1565,9 @@ Bind-Mount nicht selbst an, sondern scheitert hart
 (`Error: statfs ...: no such file or directory`), wenn es fehlt.
 
 Danach jede `~/.env/*.env`-Datei bearbeiten: `<your-dev-domain>`,
-`<your-shorturl-domain>`, `SECRET_KEY`, `POSTGRES_PASSWORD`, das Passwort
-in `DATABASE_URL`, `VALKEY_PASSWORD` (muss in `osa-backend.env` und
+`<your-shorturl-domain>`, `SECRET_KEY`, `POSTGRES_PASSWORD`,
+`OSA_APP_PASSWORD` (ein anderer Wert; es ist auch das Passwort in
+`DATABASE_URL` und `TEST_DATABASE_URL`), `VALKEY_PASSWORD` (muss in `osa-backend.env` und
 `osa-backend-valkey.env` übereinstimmen) sowie optional
 `GOOGLE_CLIENT_ID`/`KOOFR_USER`/`KOOFR_PASSWORD` eintragen. Dann:
 
@@ -1290,9 +1596,14 @@ Euer Host-Caddy
 Die beiden Vhost-Blöcke aus `dev/Caddyfile.dev.example` in die eigene
 Caddyfile einfügen (Speicherort abhängig davon, wie Caddy auf eurer
 Maschine installiert ist — siehe Caddys eigene Doku für den Default-Pfad
-auf eurer Plattform), `<your-dev-domain>`/`<your-shorturl-domain>`
-ersetzen, dann Caddy neu laden. Der `<your-shorturl-domain>`-Vhost ist
-optional, nur nötig, um Kurz-URL-Redirects lokal zu testen.
+auf eurer Plattform), `<your-dev-domain>`/`<your-shorturl-domain>`/
+`<your-allowed-cidrs>` ersetzen, dann Caddy neu laden.
+`<your-allowed-cidrs>` listet die Netze, die die Dev-Stage erreichen
+dürfen; alle anderen bekommen `403`. Den Dev-Vhost nicht offen lassen: Die
+Dev-Datenbank wird aus einem Produktions-Snapshot aufgefrischt, und der
+Vite-Dev-Server liefert Quelldateien aus. Der `<your-shorturl-domain>`-Vhost
+ist optional, nur nötig, um Kurz-URL-Redirects lokal zu testen, und bleibt
+öffentlich, weil er nur ein Redirect-Dienst ist.
 
 ### Erster Start: Build, Migration, funktionierender Login
 
@@ -1318,8 +1629,8 @@ podman exec -it osa-backend python scripts/restore_db.py
 
 (Kein `--force` nötig — das Flag schützt nur `APP_ENVIRONMENT=production`.)
 Dafür werden funktionierende `KOOFR_USER`/`KOOFR_PASSWORD` in
-`~/.env/osa-backend.env` gebraucht — den gemeinsamen Wert mit
-`ansible-vault view secrets/shared/koofr.yml` abrufen (Vault-Passwort
+`~/.env/osa-backend.env` gebraucht; das Lese-Konto mit
+`ansible-vault view secrets/nonproduction/koofr.yml` abrufen (Vault-Passwort
 nötig), falls noch nicht vorhanden. Ohne Koofr-Zugang gibt
 es aktuell keinen dokumentierten Weg zu einer befüllten, login-fähigen
 Dev-Datenbank (siehe Anmerkung am Ende dieses Abschnitts).
@@ -1367,7 +1678,7 @@ bleiben; die vollständige Tier-1/2/3-Aufschlüsselung steht in
   enthalten. Ihre Datenbank (per Default `osa_test`) ist eine eigene
   Datenbank auf demselben Postgres-Server, nicht nur ein eigener
   Tabellensatz — vor dem ersten Testlauf einmalig anlegen:
-  `podman exec osa-backend-pg psql -U osa -d osa -c "CREATE DATABASE osa_test OWNER osa;"`
+  `podman exec osa-backend-pg psql -U osa -d osa -c "CREATE DATABASE osa_test OWNER osa_app;"`
   (Schema/Tabellen kommen von `osa-backend`s eigener Test-Suite, die beim
   ersten Gebrauch die echten Alembic-Migrationen ausführt, kein separater
   Migrationsschritt nötig).
@@ -1375,3 +1686,31 @@ bleiben; die vollständige Tier-1/2/3-Aufschlüsselung steht in
   SMTP-Capturing-Tool zeigen lassen, oder beide auskommentiert lassen —
   Mailversand schlägt dann einfach still fehl, wie auf jeder anderen
   Non-Production-Stage.
+- Das Dev-Postgres hat zwei Rollen. `POSTGRES_USER` (`osa`) ist die
+  Bootstrap-Rolle des Clusters: immer Superuser, nur für die Administration.
+  Das Backend verbindet sich als `osa_app` (`OSA_APP_PASSWORD`), eine
+  Nicht-Superuser-Rolle, der die Datenbank gehört; ein Fehler in der
+  Anwendung erreicht so weder `COPY ... PROGRAM` noch Server-Dateien oder
+  die Rollenverwaltung. `dev/postgres-init/10-app-role.sh` legt sie an, aber
+  Init-Skripte laufen nur bei einem leeren Datenverzeichnis. Eine bestehende
+  Dev-Datenbank wird einmalig mit demselben Skript umgestellt, das auch die
+  ausgerollten Stages nutzen (Passwort wählen und in `OSA_APP_PASSWORD` sowie
+  in beide Datenbank-URLs eintragen), ausgeführt im Wurzelverzeichnis dieses
+  Repositories:
+
+  ```bash
+  OSA_APP_PASSWORD='<OSA_APP_PASSWORD>' podman exec -i -e OSA_APP_PASSWORD osa-backend-pg \
+      sh -c 'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -v ON_ERROR_STOP=1' \
+      < config/postgres/split-app-role.sql
+  ```
+
+  Das Skript ist idempotent und überträgt den Besitz jedes Objekts im Schema
+  `public`, was `REASSIGN OWNED BY osa` nicht kann: Die Bootstrap-Rolle
+  besitzt auch die System-Datenbanken, die PostgreSQL nicht übertragen lässt.
+  Anschließend Backend und Worker neu starten. Ein Restore aus einem Backup
+  (auch die nächtliche Auffrischung der Non-Production-Stages) leert zuerst
+  das Schema `public` und beendet alle anderen Sitzungen der Datenbank;
+  PostgreSQL erlaubt `osa_app` nicht, eine Sitzung der Bootstrap-Rolle zu
+  beenden. Während eines Restores deshalb keine Sitzung der Bootstrap-Rolle
+  auf der Anwendungsdatenbank offen halten (zur Administration die Datenbank
+  `postgres` nutzen).

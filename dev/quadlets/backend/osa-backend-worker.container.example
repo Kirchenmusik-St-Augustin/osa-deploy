@@ -17,10 +17,10 @@ Volume=%h/projects/osa-fastapi-vue/osa-backend:/app:Z
 EnvironmentFile=%h/.env/osa-backend.env
 # --watch /app: restarts the worker on source changes, mirroring the
 # backend container's uvicorn --reload dev convenience. Never used in
-# production (see quadlets/worker's Exec=), where the image is immutable
-# per release and nothing needs watching.
+# production (see templates/osa-backend-worker.container.j2's Exec=), where
+# the image is immutable per release and nothing needs watching.
 Exec=arq app.worker.settings.WorkerSettings --watch /app
-# Deliberately not ReadOnly=true, unlike quadlets/worker's production
+# Deliberately not ReadOnly=true, unlike the production worker template's
 # equivalent: this is a throwaway local dev container rebuilt on every
 # source change, not a security boundary worth hardening -- the
 # verification effort (see osa-backend's Dockerfile/CI) buys nothing here.

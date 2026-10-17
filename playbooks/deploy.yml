@@ -23,15 +23,20 @@
   # targets this host -- including setup_vps.yml (hosts: all), which
   # never references koofr_user/koofr_password at all. vars_files scopes
   # the file to this one play instead, so only a deploy.yml run needs a
-  # vault password for it.
+  # vault password for it. Production receives the account that writes and
+  # prunes the backups; every other stage receives a second, read-only
+  # account (non-production stages only download the latest production
+  # backup), so a lower-trust host never holds a credential that can
+  # overwrite or delete them.
   vars_files:
-    - ../secrets/shared/koofr.yml
+    - "../secrets/{{ 'production' if app_environment == 'production' else 'nonproduction' }}/koofr.yml"
   vars:
     local_secrets_path: "../secrets/{{ app_environment }}"
     local_quadlets_path: "../quadlets"
     local_templates_path: "../templates"
     local_timers_path: "../systemd-timers"
     local_caddyfile_path: "../config/caddy/Caddyfile.j2"
+    local_app_role_sql_file: "../config/postgres/split-app-role.sql"
 
     remote_env_dir: "{{ ansible_user_dir }}/.env"
     remote_quadlet_base: "{{ ansible_user_dir }}/.config/containers/systemd"
@@ -43,7 +48,6 @@
       - { src: caddy, dest: "osa/infrastructure/caddy" }
       - { src: logging, dest: "osa/infrastructure/logging" }
       - { src: backend, dest: "osa/osa-backend" }
-      - { src: worker, dest: "osa/osa-backend" }
       - { src: frontend, dest: "osa/osa-frontend" }
 
     # The complete stack -- a single set of units.
@@ -69,6 +73,20 @@
           app_environment='{{ app_environment }}' ist ungueltig. Muss eines
           von test/qa/production sein ("development" wird nie ueber
           osa-deploy ausgerollt).
+
+    # A vars_files entry whose file does not exist is skipped without any
+    # message, so a missing or empty Koofr file would otherwise surface as an
+    # undefined variable inside a no_log template task.
+    - name: Require the Koofr credentials of this stage
+      tags: [always]
+      ansible.builtin.assert:
+        that:
+          - koofr_user is defined
+          - koofr_password is defined
+        fail_msg: >-
+          koofr_user/koofr_password are not defined. Create
+          secrets/{{ 'production' if app_environment == 'production' else 'nonproduction' }}/koofr.yml
+          from its .example file and encrypt it with ansible-vault.
 
     - name: Verzeichnisstruktur anlegen
       tags: [always]
@@ -125,6 +143,7 @@
         src: "{{ item.path }}"
         dest: "{{ remote_env_dir }}/{{ item.path | basename }}"
         mode: "0600"
+      register: static_secret_copy
 
     - name: "*.env.j2 aus secrets/{{ app_environment }}/ finden (templated)"
       tags: [always]
@@ -145,6 +164,21 @@
         src: "{{ item.path }}"
         dest: "{{ remote_env_dir }}/{{ item.path | basename | regex_replace('\\.j2$', '') }}"
         mode: "0600"
+      register: templated_secret_copy
+
+    # The environment files are read when a container starts, so a changed
+    # secret only reaches the running process through a restart of its
+    # consumer. The restart tasks below match these names.
+    - name: Collect the names of the secret files that changed
+      tags: [always]
+      ansible.builtin.set_fact:
+        changed_secret_files: >-
+          {{ (static_secret_copy.results + templated_secret_copy.results)
+             | selectattr('changed')
+             | map(attribute='item.path')
+             | map('basename')
+             | map('regex_replace', '[.]j2$', '')
+             | list }}
 
     - name: Quadlet-Verzeichnisse anlegen
       tags: [always]
@@ -200,6 +234,32 @@
         dest: "{{ remote_quadlet_base }}/osa/osa-backend/osa-backend-valkey.container"
         mode: "0644"
       register: valkey_quadlet_render
+
+    # The three application Quadlets carry the image tag (osa_*_image_tag,
+    # default "latest"), so they are rendered like the Quadlets above.
+    - name: "Backend-Quadlet rendern (Image-Tag ist pro Stage pinnbar)"
+      tags: [always]
+      ansible.builtin.template:
+        src: "{{ local_templates_path }}/osa-backend.container.j2"
+        dest: "{{ remote_quadlet_base }}/osa/osa-backend/osa-backend.container"
+        mode: "0644"
+      register: backend_quadlet_render
+
+    - name: "Worker-Quadlet rendern (gleicher Image-Tag wie das Backend)"
+      tags: [always]
+      ansible.builtin.template:
+        src: "{{ local_templates_path }}/osa-backend-worker.container.j2"
+        dest: "{{ remote_quadlet_base }}/osa/osa-backend/osa-backend-worker.container"
+        mode: "0644"
+      register: worker_quadlet_render
+
+    - name: "Frontend-Quadlet rendern (Image-Tag ist pro Stage pinnbar)"
+      tags: [always]
+      ansible.builtin.template:
+        src: "{{ local_templates_path }}/osa-frontend.container.j2"
+        dest: "{{ remote_quadlet_base }}/osa/osa-frontend/osa-frontend.container"
+        mode: "0644"
+      register: frontend_quadlet_render
 
     # caddy.container's volume mount expects the Caddyfile directly next
     # to the Quadlet definition, see quadlets/caddy/caddy.container.
@@ -265,11 +325,80 @@
       # succeeds normally, so this never hides a real diff there.
       ignore_errors: "{{ ansible_check_mode }}"
 
-    - name: Caddy neu starten, falls sich die Caddyfile oder das Quadlet geändert hat
+    # ------------------------------------------------------------------
+    # Application database role. The backend connects as "osa_app", a
+    # non-superuser that owns the database, never as the bootstrap role of
+    # osa-backend-pg.env. The script is idempotent, so it runs on every
+    # deploy: on a fresh stage it creates the role before the pod restart
+    # below (otherwise the backend cannot log in), on an existing database it
+    # changes nothing, and a rotated password in DATABASE_URL is applied to
+    # the role as well. The password is read from the local secret file, so
+    # --check validates it too.
+    # ------------------------------------------------------------------
+    - name: Read the application role password from DATABASE_URL
+      tags: [always]
+      no_log: true
+      ansible.builtin.set_fact:
+        osa_app_password: >-
+          {{ lookup('ansible.builtin.file', local_secrets_path ~ '/osa-backend.env.j2')
+             | regex_findall('^DATABASE_URL=[^:]+://osa_app:([^@]*)@', multiline=True)
+             | first | default('') }}
+
+    # The password goes into the URL as it is, so only characters that need no
+    # URL escaping are accepted: the value in the URL is then also the value
+    # the role must have. The value is checked inside a no_log fact and only
+    # the resulting boolean is asserted, so the failure message stays visible.
+    - name: Check that the application role password can be used unescaped
+      tags: [always]
+      no_log: true
+      ansible.builtin.set_fact:
+        osa_app_password_valid: "{{ osa_app_password is match('^[A-Za-z0-9._~-]{16,}$') }}"
+
+    - name: Ensure DATABASE_URL names osa_app with a usable password
+      tags: [always]
+      ansible.builtin.assert:
+        that:
+          - osa_app_password_valid
+        fail_msg: >-
+          DATABASE_URL in secrets/{{ app_environment }}/osa-backend.env.j2
+          must use the user osa_app with a password of at least 16
+          characters from A-Z, a-z, 0-9 and . _ ~ - (no URL escaping).
+
+    - name: Create or update the application database role and its ownership
+      tags: [always]
+      no_log: true
+      ansible.builtin.command:
+        argv:
+          - podman
+          - exec
+          - -i
+          - -e
+          - OSA_APP_PASSWORD
+          - osa-backend-pg
+          - sh
+          - -c
+          - exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -v ON_ERROR_STOP=1
+        stdin: "{{ lookup('ansible.builtin.file', local_app_role_sql_file) }}"
+      environment:
+        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+        OSA_APP_PASSWORD: "{{ osa_app_password }}"
+      register: app_role_result
+      # The first start of PostgreSQL creates the data directory, which takes
+      # a while on a small server; the role can only be created once the
+      # database accepts connections. Three minutes cover slow disks too.
+      retries: 60
+      delay: 3
+      until: app_role_result.rc == 0
+      # The script only converges to the wanted state, so a run that changes
+      # nothing must not be reported as a change.
+      changed_when: false
+
+    - name: Caddy neu starten, falls sich die Caddyfile, das Quadlet oder dessen Secrets geändert haben
       tags: [always]
       when: >-
         caddyfile_copy.changed or caddy_quadlet_copy.changed
         or caddy_data_volume_render.changed or caddy_config_volume_render.changed
+        or 'caddy.env' in changed_secret_files
       ansible.builtin.systemd:
         scope: user
         name: caddy.service
@@ -280,13 +409,13 @@
       # doesn't exist yet either on a --check run against a brand-new host.
       ignore_errors: "{{ ansible_check_mode }}"
 
-    # osa-backend-pod covers backend+worker: both quadlet_targets entries
-    # copy into the same "osa/osa-backend" destination directory, and both
-    # containers are members of the same pod (osa-backend.pod's own
-    # Wants=/Before= already restarts the worker alongside it, see that
-    # file). Without this task, a quadlet-only change (e.g. a hardening
-    # flag) would sit on disk without ever reaching the running container.
-    - name: osa-backend-pod neu starten, falls Backend-/Worker-/PG-/Valkey-Quadlet sich geaendert hat
+    # osa-backend-pod covers backend+worker: both containers are members of
+    # the same pod (osa-backend.pod's own Wants=/Before= already restarts
+    # the worker alongside it, see that file), and both Quadlets are
+    # rendered into the same "osa/osa-backend" directory. Without this task,
+    # a quadlet-only change (e.g. a hardening flag or a new image tag) would
+    # sit on disk without ever reaching the running container.
+    - name: osa-backend-pod neu starten, falls Backend-/Worker-/PG-/Valkey-Quadlet oder deren Secrets sich geaendert haben
       tags: [always]
       when: >-
         (quadlet_copy_results.results
@@ -295,6 +424,11 @@
           | list | length > 0)
         or pg_quadlet_render.changed
         or valkey_quadlet_render.changed
+        or backend_quadlet_render.changed
+        or worker_quadlet_render.changed
+        or (changed_secret_files
+          | intersect(['osa-backend.env', 'osa-backend-pg.env', 'osa-backend-valkey.env'])
+          | length > 0)
       ansible.builtin.systemd:
         scope: user
         name: osa-backend-pod.service
@@ -303,13 +437,15 @@
         XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
       ignore_errors: "{{ ansible_check_mode }}"
 
-    - name: osa-frontend-pod neu starten, falls das Frontend-Quadlet sich geaendert hat
+    - name: osa-frontend-pod neu starten, falls das Frontend-Quadlet oder dessen Secrets sich geaendert haben
       tags: [always]
       when: >-
         quadlet_copy_results.results
           | selectattr('item.dest', 'equalto', 'osa/osa-frontend')
           | selectattr('changed')
           | list | length > 0
+        or frontend_quadlet_render.changed
+        or 'osa-frontend.env' in changed_secret_files
       ansible.builtin.systemd:
         scope: user
         name: osa-frontend-pod.service
@@ -334,9 +470,10 @@
       ignore_errors: "{{ ansible_check_mode }}"
 
     # ------------------------------------------------------------------
-    # Immediate deploy (only with an explicit --tags) -- pulls the current
-    # :latest image and restarts the affected pod, instead of waiting for
-    # the nightly podman-auto-update.timer.
+    # Immediate deploy (only with an explicit --tags) -- pulls the image
+    # tag the Quadlet uses (osa_*_image_tag, default "latest") and restarts
+    # the affected pod, instead of waiting for the nightly
+    # podman-auto-update.timer.
     # ------------------------------------------------------------------
     # podman pull writes its progress (including "Copying blob") to stderr,
     # on every single call, regardless of whether the image actually
@@ -345,7 +482,7 @@
     - name: "Sofort-Deploy osa-backend: aktuelle lokale Image-ID ermitteln"
       tags: [never, deploy-backend]
       ansible.builtin.command: >-
-        podman image inspect ghcr.io/kirchenmusik-st-augustin/osa-backend:latest
+        podman image inspect ghcr.io/kirchenmusik-st-augustin/osa-backend:{{ osa_backend_image_tag | default('latest') }}
         --format '{{ "{{" }}.Id{{ "}}" }}'
       register: osa_backend_image_id_before
       environment:
@@ -355,7 +492,7 @@
 
     - name: "Sofort-Deploy osa-backend: Image pullen"
       tags: [never, deploy-backend]
-      ansible.builtin.command: podman pull ghcr.io/kirchenmusik-st-augustin/osa-backend:latest
+      ansible.builtin.command: podman pull ghcr.io/kirchenmusik-st-augustin/osa-backend:{{ osa_backend_image_tag | default('latest') }}
       register: osa_backend_pull_result
       environment:
         XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
@@ -379,7 +516,7 @@
     - name: "Sofort-Deploy osa-frontend: aktuelle lokale Image-ID ermitteln"
       tags: [never, deploy-frontend]
       ansible.builtin.command: >-
-        podman image inspect ghcr.io/kirchenmusik-st-augustin/osa-frontend:latest
+        podman image inspect ghcr.io/kirchenmusik-st-augustin/osa-frontend:{{ osa_frontend_image_tag | default('latest') }}
         --format '{{ "{{" }}.Id{{ "}}" }}'
       register: osa_frontend_image_id_before
       environment:
@@ -389,7 +526,7 @@
 
     - name: "Sofort-Deploy osa-frontend: Image pullen"
       tags: [never, deploy-frontend]
-      ansible.builtin.command: podman pull ghcr.io/kirchenmusik-st-augustin/osa-frontend:latest
+      ansible.builtin.command: podman pull ghcr.io/kirchenmusik-st-augustin/osa-frontend:{{ osa_frontend_image_tag | default('latest') }}
       register: osa_frontend_pull_result
       environment:
         XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"

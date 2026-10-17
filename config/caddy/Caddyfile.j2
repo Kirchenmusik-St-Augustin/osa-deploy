@@ -12,10 +12,24 @@
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+		# Keeps window.opener available for the Google sign-in popup while
+		# still isolating the browsing context group from other origins.
+		Cross-Origin-Opener-Policy "same-origin-allow-popups"
 		# Also strip Caddy's own identifying header -- header_down below
 		# only strips the upstream's.
 		-Server
 	}
+}
+
+# Content security policy of the single page application, sent in
+# report-only mode: violations show up in the browser console without
+# blocking anything. Switch the header name to Content-Security-Policy once
+# the policy no longer reports false positives. Allowed outside origins: the
+# Google sign-in script, button frame and styles, and the Google Fonts
+# stylesheet and font files imported by the application styles.
+(frontend_csp) {
+	header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://*.googleusercontent.com; connect-src 'self'{% if backend_domain != frontend_domain %} https://{{ backend_domain }}{% endif %} https://accounts.google.com/gsi/; frame-src https://accounts.google.com/gsi/; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
 }
 
 # Rejects oversized request bodies at the edge with 413, in step with the
@@ -27,17 +41,32 @@
 	}
 }
 
+# Log viewer: protected by basic auth and, when the inventory variable
+# logging_allowed_cidrs lists networks, reachable from those networks only.
+# The route block keeps the written order, so the network check answers 403
+# before the credentials are examined and a client outside the allowed
+# networks cannot tell a wrong password from a right one.
+(logging_viewer) {
+	handle /logging/dozzle* {
+		route {
+{% if logging_allowed_cidrs | default([]) %}
+			@outside_allowlist not remote_ip {{ logging_allowed_cidrs | join(' ') }}
+			respond @outside_allowlist 403
+{% endif %}
+			basic_auth {
+				{$LOGGING_USER} {$LOGGING_PASSWORD_HASH}
+			}
+			reverse_proxy 127.0.0.1:8081
+		}
+	}
+}
+
 {% if backend_domain == frontend_domain %}
 {{ backend_domain }} {
 	import security_headers
 	import request_body_limit
 	log
-	basic_auth /logging* {
-		{$LOGGING_USER} {$LOGGING_PASSWORD_HASH}
-	}
-	handle /logging/dozzle* {
-		reverse_proxy 127.0.0.1:8081
-	}
+	import logging_viewer
 	# Compat redirect: hochamt.at/go/{path} existed before the dedicated
 	# go.-subdomain below and redirected there too -- same pattern already
 	# proven in local development.
@@ -57,6 +86,7 @@
 	}
 	# Frontend: catch-all fallback.
 	handle {
+		import frontend_csp
 		reverse_proxy 127.0.0.1:21001 {
 			header_down -Server
 		}
@@ -67,12 +97,7 @@
 	import security_headers
 	import request_body_limit
 	log
-	basic_auth /logging* {
-		{$LOGGING_USER} {$LOGGING_PASSWORD_HASH}
-	}
-	handle /logging/dozzle* {
-		reverse_proxy 127.0.0.1:8081
-	}
+	import logging_viewer
 	handle_path /go/* {
 		redir https://{{ shorturl_domain }}{uri} 302
 	}
@@ -96,6 +121,7 @@
 
 {{ frontend_domain }} {
 	import security_headers
+	import frontend_csp
 	log
 	reverse_proxy 127.0.0.1:21001 {
 		header_down -Server

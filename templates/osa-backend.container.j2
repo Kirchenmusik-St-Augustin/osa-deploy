@@ -4,7 +4,11 @@ Description=OSA Backend API (Prod)
 [Container]
 ContainerName=osa-backend
 Pod=osa-backend.pod
-Image=ghcr.io/kirchenmusik-st-augustin/osa-backend:latest
+{# "latest" follows the nightly auto-update. Setting osa_backend_image_tag
+   (inventory or -e) to a full commit SHA pins this container to one release;
+   osa-backend-worker.container reads the same variable, so web and worker
+   never run different versions while pinned. #}
+Image=ghcr.io/kirchenmusik-st-augustin/osa-backend:{{ osa_backend_image_tag | default('latest') }}
 AutoUpdate=registry
 EnvironmentFile=%h/.env/osa-backend.env
 

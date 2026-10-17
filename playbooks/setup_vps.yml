@@ -2,14 +2,16 @@
 # Base configuration for a new VPS: bare system -> hardened,
 # rootless-Podman-capable system with the "admin" and "service" users.
 #
-# First run: ansible-playbook -i inventory/<stage>.ini playbooks/setup_vps.yml -u root
+# First run: ansible-playbook -i inventory/<stage>.ini playbooks/setup_vps.yml -u root -e full_upgrade=true
 # Re-runs:   ansible-playbook -i inventory/<stage>.ini playbooks/setup_vps.yml -u admin --ask-become-pass
 #            (root SSH login gets disabled at the end of this playbook)
 #
 # This playbook is the bus-factor safety net in case the production system
 # ever needs a full reinstall. The live host is already bootstrapped - a
 # re-run only serves as verification (--check --diff should report "no
-# change"), not routine operation.
+# change"), not routine operation. Security updates are applied by the host
+# itself afterwards (unattended upgrades); a full distribution upgrade runs
+# only when requested with -e full_upgrade=true.
 
 - name: Base configuration for a new VPS
   hosts: all
@@ -27,6 +29,10 @@
     # pointing at a current release is the right call for a "fresh OS
     # install" runbook.
     minimum_podman_major_version: 5
+    # A full distribution upgrade changes packages beyond security fixes, so
+    # it runs only on request (-e full_upgrade=true), e.g. on a fresh install.
+    # Without it a re-run leaves the installed package set alone.
+    full_upgrade: false
 
   tasks:
     # ------------------------------------------------------------------
@@ -40,13 +46,16 @@
     #    default). slirp4netns is never used anywhere in this stack and
     #    is therefore not installed.
     # ------------------------------------------------------------------
-    - name: Full upgrade + install core packages (Debian)
+    - name: Install core packages (Debian)
       when: ansible_os_family == "Debian"
       block:
         - ansible.builtin.apt:
             update_cache: yes
             upgrade: dist
+          when: full_upgrade | bool
         - ansible.builtin.apt:
+            update_cache: yes
+            cache_valid_time: 3600
             name:
               - git
               - podman
@@ -65,14 +74,25 @@
               - catatonit
               - curl
               - tar
+              - unattended-upgrades
             state: present
 
-    - name: Full upgrade + install core packages (RedHat)
+    - name: Enable daily unattended security upgrades (Debian)
+      when: ansible_os_family == "Debian"
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+        mode: "0644"
+
+    - name: Install core packages (RedHat)
       when: ansible_os_family == "RedHat"
       block:
         - ansible.builtin.dnf:
             name: "*"
             state: latest
+          when: full_upgrade | bool
         - ansible.builtin.dnf:
             name:
               - git
@@ -85,7 +105,24 @@
               - passt
               - curl
               - tar
+              - dnf-automatic
             state: present
+
+    - name: Apply security updates automatically (RedHat)
+      when: ansible_os_family == "RedHat"
+      block:
+        - ansible.builtin.lineinfile:
+            path: /etc/dnf/automatic.conf
+            regexp: '^upgrade_type\s*='
+            line: "upgrade_type = security"
+        - ansible.builtin.lineinfile:
+            path: /etc/dnf/automatic.conf
+            regexp: '^apply_updates\s*='
+            line: "apply_updates = yes"
+        - ansible.builtin.systemd:
+            name: dnf-automatic.timer
+            enabled: yes
+            state: started
 
     - name: Full upgrade + install core packages (SUSE)
       when: ansible_os_family == "Suse"
@@ -424,16 +461,52 @@
           changed_when: true
 
     # ------------------------------------------------------------------
-    # 9. SSH hardening (after the reboot - locks root out only at the end
-    # of the play via the handler, no more root connection needed from
-    # here)
+    # 9. SSH hardening (after the reboot; the settings are applied right
+    # after the edit so the effective configuration can be verified, an
+    # open root session stays valid, and no more root connection is needed
+    # from here)
     # ------------------------------------------------------------------
-    - name: Disable root SSH login
+    # Key-only for every account (the keys were distributed in section 5, so
+    # this runs after them). New settings are inserted before the first
+    # "Match" block, because anything after it only applies to that block.
+    # validate refuses a configuration sshd cannot parse before the file is
+    # replaced and sshd restarted.
+    - name: Harden sshd (key-only authentication, no root login)
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
-        regexp: "^#?PermitRootLogin"
-        line: "PermitRootLogin no"
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        insertbefore: "^Match "
+        validate: /usr/sbin/sshd -t -f %s
+      loop:
+        - { regexp: "^#?PermitRootLogin", line: "PermitRootLogin no" }
+        - { regexp: "^#?PasswordAuthentication", line: "PasswordAuthentication no" }
+        - { regexp: "^#?KbdInteractiveAuthentication", line: "KbdInteractiveAuthentication no" }
+        - { regexp: "^#?MaxAuthTries", line: "MaxAuthTries 3" }
+        - { regexp: "^#?X11Forwarding", line: "X11Forwarding no" }
       notify: restart sshd
+
+    - name: Apply the sshd configuration before verifying it
+      ansible.builtin.meta: flush_handlers
+
+    # OpenSSH uses the first value it reads, and the main file includes
+    # /etc/ssh/sshd_config.d/*.conf at the top: a drop-in (for example from
+    # cloud-init) can override the lines above. Read what sshd really uses.
+    - name: Read the effective sshd configuration
+      ansible.builtin.command: /usr/sbin/sshd -T
+      register: sshd_effective
+      changed_when: false
+      check_mode: false
+
+    - name: Assert that no drop-in file weakens the sshd hardening
+      ansible.builtin.assert:
+        that:
+          - "'permitrootlogin no' in sshd_effective.stdout_lines"
+          - "'passwordauthentication no' in sshd_effective.stdout_lines"
+          - "'kbdinteractiveauthentication no' in sshd_effective.stdout_lines"
+          - "'maxauthtries 3' in sshd_effective.stdout_lines"
+          - "'x11forwarding no' in sshd_effective.stdout_lines"
+        fail_msg: A file below /etc/ssh/sshd_config.d/ overrides the hardened sshd settings.
 
     - name: Disable password login for "admin" (key-only)
       ansible.builtin.blockinfile:

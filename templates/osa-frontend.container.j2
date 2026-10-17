@@ -4,7 +4,9 @@ Description=OSA Frontend (Prod)
 [Container]
 ContainerName=osa-frontend
 Pod=osa-frontend.pod
-Image=ghcr.io/kirchenmusik-st-augustin/osa-frontend:latest
+{# "latest" follows the nightly auto-update. Setting osa_frontend_image_tag
+   (inventory or -e) to a full commit SHA pins this container to one release. #}
+Image=ghcr.io/kirchenmusik-st-augustin/osa-frontend:{{ osa_frontend_image_tag | default('latest') }}
 AutoUpdate=registry
 # Must set API_BASE_URL and APP_ENVIRONMENT (GOOGLE_CLIENT_ID optional) --
 # the image's docker-entrypoint.d/40-generate-runtime-config.sh refuses to

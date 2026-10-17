@@ -4,7 +4,10 @@ Description=OSA Backend ARQ Worker (Prod)
 [Container]
 ContainerName=osa-backend-worker
 Pod=osa-backend.pod
-Image=ghcr.io/kirchenmusik-st-augustin/osa-backend:latest
+{# Same variable as osa-backend.container: a pin applies to web and worker
+   together, so a job never runs against a schema the web container has not
+   migrated yet. #}
+Image=ghcr.io/kirchenmusik-st-augustin/osa-backend:{{ osa_backend_image_tag | default('latest') }}
 AutoUpdate=registry
 EnvironmentFile=%h/.env/osa-backend.env
 # Same image/entrypoint as osa-backend.container -- SKIP_MIGRATIONS
