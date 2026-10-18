@@ -5,9 +5,9 @@ Before=osa-backend.service osa-backend-pg.service osa-backend-valkey.service osa
 [Pod]
 PodName=osa-backend-pod
 PublishPort=127.0.0.1:21000:8000
-# Loopback-only -- lets an admin run psql directly from the host for
-# diagnostics, never reachable from outside.
-PublishPort=127.0.0.1:5432:5432
+# PostgreSQL is deliberately not published on the host: every local account
+# could reach the port. Diagnostics run inside the container:
+#   podman exec -it osa-backend-pg psql -U <role> -d osa
 # IPv4-only: pasta's default dual-stack IPv6 passthrough is fragile in this
 # host's network setup and can silently black-hole outbound IPv6
 # connections (e.g. to Google's cert endpoint during Google Login) without

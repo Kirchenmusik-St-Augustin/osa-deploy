@@ -14,6 +14,11 @@ Environment=SKIP_MIGRATIONS=true
 # inotify events either way.
 Environment=WATCHFILES_FORCE_POLLING=true
 Volume=%h/projects/osa-fastapi-vue/osa-backend:/app:Z
+# Git metadata stays read-only so a compromised dependency cannot plant hooks
+# that later run on the host.
+Volume=%h/projects/osa-fastapi-vue/osa-backend/.git:/app/.git:ro,Z
+NoNewPrivileges=true
+DropCapability=all
 EnvironmentFile=%h/.env/osa-backend.env
 # --watch /app: restarts the worker on source changes, mirroring the
 # backend container's uvicorn --reload dev convenience. Never used in
@@ -21,9 +26,10 @@ EnvironmentFile=%h/.env/osa-backend.env
 # the image is immutable per release and nothing needs watching.
 Exec=arq app.worker.settings.WorkerSettings --watch /app
 # Deliberately not ReadOnly=true, unlike the production worker template's
-# equivalent: this is a throwaway local dev container rebuilt on every
-# source change, not a security boundary worth hardening -- the
-# verification effort (see osa-backend's Dockerfile/CI) buys nothing here.
+# equivalent: the source tree is bind-mounted writable for hot reload and
+# the container is rebuilt on every source change. It still holds the
+# credentials of a database that carries a production snapshot, hence the
+# read-only .git, NoNewPrivileges and dropped capabilities above.
 
 [Service]
 Restart=always

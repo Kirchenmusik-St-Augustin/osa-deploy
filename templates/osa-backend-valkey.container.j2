@@ -38,6 +38,12 @@ Volume=%h/data/osa/{{ app_environment }}/valkey:/data:Z
 # elsewhere in this repo, this one holds an actual secret, not
 # multi-process scratch space.
 Mount=type=tmpfs,target=/tmp,tmpfs-mode=1700
+# The password is written unquoted into the config file, so a value with
+# whitespace or a quote would produce a broken configuration and a crash
+# loop; the case statement refuses it with a clear message instead.
+# maxmemory sits below the 64m cgroup limit with noeviction: a runaway queue
+# then gets clean write errors instead of an OOM kill (restart plus replay
+# of the append-only file).
 # --appendonly yes: durability is the entire point of adding this queue --
 # a job already accepted by the web container must survive a worker/
 # Valkey restart (e.g. during a deploy), not just live in memory.
@@ -65,7 +71,7 @@ Mount=type=tmpfs,target=/tmp,tmpfs-mode=1700
 # sign. "$VALKEY_PASSWORD" needs no such escaping: systemd only substitutes
 # "$VAR" when it is a whole word of its own, and here it sits inside the
 # larger sh -c word, so it reaches the shell untouched.
-Exec=sh -c 'umask 077 && printf "requirepass %%s\nappendonly yes\n" "$VALKEY_PASSWORD" > /tmp/valkey.generated.conf && exec valkey-server /tmp/valkey.generated.conf'
+Exec=sh -c 'case "$VALKEY_PASSWORD" in ""|*[!A-Za-z0-9_-]*) echo "VALKEY_PASSWORD must be non-empty and URL-safe (A-Z a-z 0-9 _ -)" >&2; exit 1;; esac; umask 077 && printf "requirepass %%s\nappendonly yes\nmaxmemory 48mb\nmaxmemory-policy noeviction\n" "$VALKEY_PASSWORD" > /tmp/valkey.generated.conf && exec valkey-server /tmp/valkey.generated.conf'
 
 # REDISCLI_AUTH (read by valkey-cli, kept for compatibility with its
 # Redis-derived name) keeps the password out of this process's argv too --

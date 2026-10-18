@@ -90,9 +90,13 @@ comments in `templates/osa-backend.container.j2` and
 `templates/osa-backend-worker.container.j2` for the exact numbers and
 their derivation.
 
-The local dev containers (`dev/quadlets/backend/*.example`) deliberately
-stay off this hardening — a throwaway hot-reload container isn't a
-security boundary worth the same verification effort.
+The local dev containers (`dev/quadlets/backend/*.example`) keep a lighter
+profile than production (the source tree is bind-mounted writable for hot
+reload, no memory limits on the application containers), but they are not
+throwaway: the nightly `downsync` loads a production snapshot into the dev
+database. They therefore still run with `NoNewPrivileges=true`, all
+capabilities dropped, the bind-mounted `.git` directory read-only, and a
+read-only, capability-restricted database container.
 
 CI gates on this: `container-readonly-smoke-test` in
 `osa-backend`'s workflow builds the production image, runs both
@@ -178,8 +182,9 @@ Only `production` is a real, currently deployed target — `test`/`qa` are
 placeholder skeletons (`CHANGEME.example.invalid`) until a dedicated VPS
 exists for them.
 
-Each stage's `inventory/<stage>.ini` also carries `backend_domain`,
-`frontend_domain`, and `shorturl_domain` — independent variables (backend
+Each stage's `inventory/<stage>.ini` also carries `acme_email` (the contact
+address Caddy registers with the certificate authority) as well as
+`backend_domain`, `frontend_domain`, and `shorturl_domain`. The three domains are independent variables (backend
 and frontend don't have to share a domain, see `osa-backend`'s
 `samesite=none`/CSRF-origin-check cross-domain support), rendered into the
 Caddyfile and into `secrets/<stage>/*.env.j2` at deploy time. Each stage's
@@ -190,8 +195,10 @@ on that stage's host.
 `inventory/qa.ini` directly — the placeholder file is already checked into
 the repo, no copy step needed. Replace the `[vps]` entry with the new
 host's IP or hostname (whatever `ssh` can already reach), and replace all
-three `CHANGEME.example.invalid` values under `[vps:vars]` with that
-stage's real `backend_domain`/`frontend_domain`/`shorturl_domain` -- while
+three `CHANGEME.example.invalid` domain values and the `acme_email`
+placeholder under `[vps:vars]` with that stage's real
+`backend_domain`/`frontend_domain`/`shorturl_domain` and a mailbox of
+yours -- while
 you're in there, also update or remove the file's own top-of-file
 "PLACEHOLDER, no real VPS exists yet" comment, or it'll keep claiming that
 after you've filled in a real, working stage. Nothing else needs to change
@@ -218,7 +225,7 @@ Turns a bare host into a hardened, rootless-Podman-capable one:
 - rootless-Podman kernel/storage tuning
 - **reboots the host partway through** (finalizes kernel/Podman/sysctl
   changes, deliberately before SSH gets hardened)
-- firewall lockdown to SSH/80/443 only
+- firewall lockdown to SSH/80/443 only (SSH rate-limited)
 - **hardens SSH at the end**: key-only login for every account (password
   and keyboard-interactive login off), root login disabled, at most three
   authentication attempts, no X11 forwarding. The playbook then reads the
@@ -672,7 +679,8 @@ suffix), `chmod 600` the env files, then reload systemd and start
 everything:
 
 ```bash
-mkdir -p ~/.config/containers/systemd/osa/osa-backend ~/.config/containers/systemd/osa/osa-frontend ~/.env ~/data/osa-backend/postgres ~/data/osa-backend/valkey
+install -d -m 700 ~/.env
+mkdir -p ~/.config/containers/systemd/osa/osa-backend ~/.config/containers/systemd/osa/osa-frontend ~/data/osa-backend/postgres ~/data/osa-backend/valkey
 
 for f in dev/quadlets/backend/*.example; do
   cp "$f" ~/.config/containers/systemd/osa/osa-backend/"$(basename "${f%.example}")"
@@ -780,15 +788,15 @@ notes:
 
 - `DATABASE_URL`/`TEST_DATABASE_URL` use port `5432` — `osa-backend` reaches
   Postgres over the pod's shared network namespace, on Postgres' own
-  container-internal port, not on `osa-backend.pod.example`'s
-  host-published port (`5433` by default). Nothing in the running stack
-  actually needs that host port; it exists purely as an optional
-  convenience for manual `psql` debugging directly from the dev host
-  itself (loopback-only, same purpose as production's equivalent port —
-  never reachable from outside the machine). Adjust it in
-  `osa-backend.pod.example` if `5432` is already bound by another project
-  and you want to keep that debugging option open; leave it as-is
-  otherwise.
+  container-internal port, not on the host-published port (`5433`) that
+  `osa-backend.pod.example` offers as a commented-out option. Nothing in
+  the running stack needs that host port, and every local account on the
+  dev host could reach it, so it is off by default: uncomment the
+  `PublishPort` line in `osa-backend.pod.example` only if you want manual
+  `psql` debugging directly from the dev host (loopback-only, same purpose
+  as production's equivalent port, never reachable from outside the
+  machine), and change the host port there if `5433` is already bound by
+  another project.
 - `VITE_API_BASE_URL` is a full absolute URL, not the relative `/api` the
   app otherwise recommends — the Vite dev server itself doesn't do the
   `/api` path split, only your own Caddy in front of it does. A different
@@ -929,9 +937,14 @@ Graceful Shutdown wirklich fertig werden konnte. Die exakten Zahlen samt
 Herleitung stehen als Kommentar in `templates/osa-backend.container.j2`
 und `templates/osa-backend-worker.container.j2`.
 
-Die lokalen Dev-Container (`dev/quadlets/backend/*.example`) bleiben
-bewusst ohne diese Härtung — ein Wegwerf-Hot-Reload-Container ist keine
-Sicherheitsgrenze, die denselben Verifikationsaufwand rechtfertigt.
+Die lokalen Dev-Container (`dev/quadlets/backend/*.example`) behalten ein
+leichteres Profil als die Produktion (der Quellbaum ist für Hot-Reload
+beschreibbar eingebunden, keine Speicherlimits für die
+Anwendungs-Container), sind aber nicht wegwerfbar: der nächtliche
+`downsync` lädt einen Produktions-Snapshot in die Dev-Datenbank. Sie laufen
+deshalb trotzdem mit `NoNewPrivileges=true`, ohne Capabilities, mit
+schreibgeschütztem eingebundenem `.git`-Verzeichnis und einem
+schreibgeschützten, capability-beschränkten Datenbank-Container.
 
 CI setzt hier an: `container-readonly-smoke-test` in `osa-backend`s
 Workflow baut das Produktions-Image, startet beide Container unter
@@ -1021,8 +1034,10 @@ die falsche Stage zu treffen. Nur `production` ist ein reales, aktuell
 deployetes Ziel — `test`/`qa` sind Platzhalter-Skelette
 (`CHANGEME.example.invalid`), bis für sie ein eigener VPS existiert.
 
-Jede `inventory/<stage>.ini` trägt außerdem `backend_domain`,
-`frontend_domain` und `shorturl_domain` — unabhängige Variablen (Backend
+Jede `inventory/<stage>.ini` trägt außerdem `acme_email` (die
+Kontaktadresse, mit der sich Caddy bei der Zertifizierungsstelle
+registriert) sowie `backend_domain`, `frontend_domain` und
+`shorturl_domain`. Die drei Domains sind unabhängige Variablen (Backend
 und Frontend müssen sich keine Domain teilen, siehe `osa-backend`s
 `samesite=none`/CSRF-Origin-Check-Unterstützung für Cross-Domain), die zur
 Deploy-Zeit ins Caddyfile und in `secrets/<stage>/*.env.j2` einfließen.
@@ -1033,8 +1048,10 @@ Pfad, `~/data/osa/<stage>/postgres` auf dem jeweiligen Host.
 `inventory/qa.ini` direkt editieren — die Platzhalterdatei liegt bereits im
 Repo, kein Kopierschritt nötig. Den `[vps]`-Eintrag durch den neuen Host
 ersetzen (IP oder Hostname, alles, was `ssh` bereits erreicht), und alle
-drei `CHANGEME.example.invalid`-Werte unter `[vps:vars]` durch die echten
-`backend_domain`/`frontend_domain`/`shorturl_domain` dieser Stage ersetzen —
+drei `CHANGEME.example.invalid`-Domainwerte und den `acme_email`-Platzhalter
+unter `[vps:vars]` durch die echten
+`backend_domain`/`frontend_domain`/`shorturl_domain` dieser Stage und eine
+eigene Mailadresse ersetzen;
 dabei auch gleich den Platzhalter-Kommentar am Dateianfang ("PLACEHOLDER,
 kein echter VPS vorhanden") aktualisieren oder entfernen, sonst behauptet
 er das auch nach dem Befüllen mit einer echten, funktionierenden Stage
@@ -1064,7 +1081,7 @@ System:
 - rootless-Podman-Kernel-/Storage-Tuning
 - **startet den Host mittendrin neu** (finalisiert Kernel-/Podman-/
   Sysctl-Änderungen, bewusst vor der SSH-Härtung)
-- Firewall-Lockdown auf nur noch SSH/80/443
+- Firewall-Lockdown auf nur noch SSH/80/443 (SSH ratenbegrenzt)
 - **härtet SSH am Ende**: Key-only-Login für jeden Account (Passwort- und
   Keyboard-Interactive-Login aus), root-Login deaktiviert, höchstens drei
   Anmeldeversuche, kein X11-Forwarding. Danach liest das Playbook die
@@ -1544,7 +1561,8 @@ weglassen), die Env-Dateien `chmod 600`, dann systemd neu laden und alles
 starten:
 
 ```bash
-mkdir -p ~/.config/containers/systemd/osa/osa-backend ~/.config/containers/systemd/osa/osa-frontend ~/.env ~/data/osa-backend/postgres ~/data/osa-backend/valkey
+install -d -m 700 ~/.env
+mkdir -p ~/.config/containers/systemd/osa/osa-backend ~/.config/containers/systemd/osa/osa-frontend ~/data/osa-backend/postgres ~/data/osa-backend/valkey
 
 for f in dev/quadlets/backend/*.example; do
   cp "$f" ~/.config/containers/systemd/osa/osa-backend/"$(basename "${f%.example}")"
@@ -1657,15 +1675,16 @@ bleiben; die vollständige Tier-1/2/3-Aufschlüsselung steht in
 
 - `DATABASE_URL`/`TEST_DATABASE_URL` nutzen Port `5432` — `osa-backend`
   erreicht Postgres über den gemeinsamen Pod-Netzwerk-Namespace, auf
-  Postgres' eigenem containerinternem Port, nicht über den von
-  `osa-backend.pod.example` nach außen veröffentlichten Host-Port (`5433`
-  per Default). Der laufende Stack selbst braucht diesen Host-Port gar
-  nicht — er existiert rein als optionale Komfortfunktion für manuelles
-  `psql`-Debugging direkt vom Dev-Host aus (nur Loopback, derselbe Zweck
-  wie der äquivalente Port in Produktion — nie von außerhalb der Maschine
-  erreichbar). In `osa-backend.pod.example` anpassen, falls `5432` schon
-  von einem anderen Projekt belegt ist und diese Debug-Option erhalten
-  bleiben soll; sonst unverändert lassen.
+  Postgres' eigenem containerinternem Port, nicht über den nach außen
+  veröffentlichten Host-Port (`5433`), den `osa-backend.pod.example` als
+  auskommentierte Option anbietet. Der laufende Stack braucht diesen
+  Host-Port nicht, und jedes lokale Konto auf dem Dev-Host könnte ihn
+  erreichen, deshalb ist er standardmäßig aus: die `PublishPort`-Zeile in
+  `osa-backend.pod.example` nur einkommentieren, wenn manuelles
+  `psql`-Debugging direkt vom Dev-Host aus gewünscht ist (nur Loopback,
+  derselbe Zweck wie der äquivalente Port in Produktion, nie von
+  außerhalb der Maschine erreichbar), und den Host-Port dort ändern, falls
+  `5433` schon von einem anderen Projekt belegt ist.
 - `VITE_API_BASE_URL` ist eine vollständige absolute URL, nicht das
   relative `/api`, das die App sonst empfiehlt — der Vite-Dev-Server
   selbst macht den `/api`-Pfad-Split nicht, das übernimmt nur das eigene

@@ -47,7 +47,7 @@ DropCapability=all
 PodmanArgs=--memory=64m
 PidsLimit=32
 
-Mount=type=tmpfs,target=/tmp
+Mount=type=tmpfs,target=/tmp,tmpfs-mode=1777,noexec
 
 # --- HealthCheck Konfiguration ---
 Notify=healthy

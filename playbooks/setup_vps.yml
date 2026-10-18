@@ -197,16 +197,10 @@
       changed_when: false
       failed_when: false
 
-    - name: Check whether "service" already exists
-      ansible.builtin.command: id service
-      register: service_check
-      changed_when: false
-      failed_when: false
-
-    - name: Generate random passwords
+    - name: Generate a random password for "admin"
+      no_log: true
       ansible.builtin.set_fact:
-        admin_pw: "{{ lookup('password', '/dev/null length=16 chars=ascii_letters,digits') }}"
-        service_pw: "{{ lookup('password', '/dev/null length=16 chars=ascii_letters,digits') }}"
+        admin_pw: "{{ lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}"
 
     - name: Create user "admin"
       ansible.builtin.user:
@@ -237,15 +231,18 @@
 
     - name: Set password for "admin" (only on first creation)
       when: admin_check.rc != 0
+      no_log: true
       ansible.builtin.user:
         name: admin
         password: "{{ admin_pw | password_hash('sha512') }}"
 
-    - name: Set password for "service" (only on first creation)
-      when: service_check.rc != 0
+    # "service" logs in with its SSH key only. "*" is not a valid hash, so no
+    # password can ever match; unlike a locked "!" it does not block key login.
+    - name: Disable password login for "service" (key-only account, no usable password)
       ansible.builtin.user:
         name: service
-        password: "{{ service_pw | password_hash('sha512') }}"
+        password: "*"
+        update_password: on_create
 
     # ------------------------------------------------------------------
     # 4. Persistent systemd journal
@@ -306,10 +303,10 @@
       ansible.builtin.command: loginctl enable-linger service
       changed_when: true
 
-    - name: Allow unprivileged ports from 25 (for rootless Podman)
+    - name: Allow unprivileged ports from 80 (for rootless Caddy)
       ansible.builtin.copy:
         dest: /etc/sysctl.d/99-podman-ports.conf
-        content: "net.ipv4.ip_unprivileged_port_start=25\n"
+        content: "net.ipv4.ip_unprivileged_port_start=80\n"
         mode: "0644"
       notify: reload sysctl
 
@@ -406,10 +403,18 @@
         - community.general.ufw:
             default: deny
             direction: incoming
+        # limit: a source that opens six or more connections within 30 seconds
+        # is denied, which slows down SSH brute forcing. The plain allow rule
+        # of earlier runs must be removed, or it would keep taking precedence.
+        - community.general.ufw:
+            rule: limit
+            port: "22"
+            proto: tcp
         - community.general.ufw:
             rule: allow
             port: "22"
             proto: tcp
+            delete: true
         - community.general.ufw:
             rule: allow
             port: "80"

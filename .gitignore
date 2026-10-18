@@ -1,5 +1,11 @@
-.vault_pass
+.vault_pass*
 *.retry
 *.log
 __pycache__/
 *.pyc
+
+# Decrypted or exported secret material must never be committed.
+*.dec
+*.decrypted
+*.pem
+*.key

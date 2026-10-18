@@ -9,11 +9,20 @@ Pod=osa-backend.pod
 # run podman-auto-update.timer, so nothing here pulls or restarts this
 # container unattended -- AutoUpdate=registry only ever takes effect on an
 # explicit `podman auto-update` a developer runs themselves, and the
-# blast radius of a bad pull is a single throwaway local dev DB, not the
+# blast radius of a bad pull is the local dev database, not the
 # production system. An intentional simplification, not an oversight.
 Image=docker.io/library/postgres:18
 AutoUpdate=registry
 EnvironmentFile=%h/.env/osa-backend-pg.env
+# Holds the nightly production snapshot (downsync), so it is hardened like
+# production. The entrypoint starts as root to chown the data directory and
+# then drops to the postgres user, which needs exactly these capabilities.
+ReadOnly=true
+NoNewPrivileges=true
+DropCapability=all
+AddCapability=CHOWN DAC_OVERRIDE FOWNER SETGID SETUID
+PodmanArgs=--memory=384m
+PidsLimit=150
 Volume=%h/data/osa-backend/postgres:/var/lib/postgresql:Z
 # Creates the non-superuser application role on the first start with an empty
 # data directory (see the README for migrating an existing one).

@@ -1,9 +1,27 @@
 {
-	email einteilung@hochamt.at
-	# Disables HTTP/3 (QUIC), TCP-only.
+	email {{ acme_email | mandatory }}
+	# The admin API would listen unauthenticated on the host's loopback
+	# (the container uses the host network). The container is restarted,
+	# never reloaded, so nothing needs it; the health check uses the
+	# dedicated probe site below instead.
+	admin off
 	servers {
+		# Disables HTTP/3 (QUIC), TCP-only.
 		protocols h1 h2
+		# Bounds slow-header / slow-body clients; no write timeout on purpose so
+		# long-running responses are not cut off.
+		timeouts {
+			read_header 10s
+			read_body 60s
+			idle 2m
+		}
 	}
+}
+
+# Loopback-only probe for the container health check (the admin API is off).
+http://127.0.0.1:2020 {
+	bind 127.0.0.1
+	respond /healthz "ok" 200
 }
 
 (security_headers) {

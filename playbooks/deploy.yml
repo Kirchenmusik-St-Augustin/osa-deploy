@@ -37,6 +37,9 @@
     local_timers_path: "../systemd-timers"
     local_caddyfile_path: "../config/caddy/Caddyfile.j2"
     local_app_role_sql_file: "../config/postgres/split-app-role.sql"
+    # The pinned Caddy image, read from the Quadlet so the Caddyfile is
+    # validated with exactly the version that will run it.
+    caddy_image: "{{ lookup('ansible.builtin.file', local_quadlets_path ~ '/caddy/caddy.container') | regex_search('^Image=(\\S+)', '\\1', multiline=True) | first }}"
 
     remote_env_dir: "{{ ansible_user_dir }}/.env"
     remote_quadlet_base: "{{ ansible_user_dir }}/.config/containers/systemd"
@@ -73,6 +76,19 @@
           app_environment='{{ app_environment }}' ist ungueltig. Muss eines
           von test/qa/production sein ("development" wird nie ueber
           osa-deploy ausgerollt).
+
+    - name: Refuse placeholder or malformed inventory values
+      tags: [always]
+      ansible.builtin.assert:
+        that:
+          - item is regex('^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$')
+          - not (item is search('(^|\\.)(invalid|example)(\\.|$)|changeme', ignorecase=True))
+        fail_msg: "'{{ item }}' is not a usable public hostname (placeholder or malformed)."
+        quiet: true
+      loop:
+        - "{{ backend_domain }}"
+        - "{{ frontend_domain }}"
+        - "{{ shorturl_domain }}"
 
     # A vars_files entry whose file does not exist is skipped without any
     # message, so a missing or empty Koofr file would otherwise surface as an
@@ -133,6 +149,57 @@
         patterns: "*.env"
       register: secret_files
 
+    - name: "*.env.j2 aus secrets/{{ app_environment }}/ finden (templated)"
+      tags: [always]
+      delegate_to: localhost
+      become: no
+      ansible.builtin.find:
+        paths: "{{ local_secrets_path }}"
+        patterns: "*.env.j2"
+      register: secret_templates
+
+    - name: Refuse to deploy secret files that are not vault-encrypted
+      tags: [always]
+      delegate_to: localhost
+      become: no
+      run_once: true
+      check_mode: false
+      changed_when: false
+      ansible.builtin.shell: >-
+        grep -L '^\$ANSIBLE_VAULT;'
+        {{ (secret_files.files + secret_templates.files) | map(attribute='path') | map('quote') | join(' ') }}
+        {{ ('../secrets/' ~ ('production' if app_environment == 'production' else 'nonproduction') ~ '/koofr.yml') | quote }}
+        || true
+      register: unencrypted_secret_files
+      failed_when: unencrypted_secret_files.stdout | trim | length > 0
+
+    # Orphaned secret files keep stale credentials alive. Deleting files on a
+    # live host automatically is itself risky, so the run stops and lists the
+    # names for a manual, reviewed removal.
+    - name: List the files currently in ~/.env
+      tags: [always]
+      ansible.builtin.find:
+        paths: "{{ remote_env_dir }}"
+        file_type: file
+      register: env_dir_files
+
+    - name: Fail on secret files that this playbook does not manage
+      tags: [always]
+      vars:
+        managed_env_files: >-
+          {{ (secret_files.files + secret_templates.files)
+             | map(attribute='path') | map('basename')
+             | map('regex_replace', '[.]j2$', '') | list }}
+        unmanaged_env_files: >-
+          {{ env_dir_files.files | map(attribute='path') | map('basename')
+             | difference(managed_env_files) | list }}
+      ansible.builtin.assert:
+        that: unmanaged_env_files | length == 0
+        fail_msg: >-
+          Unmanaged files in {{ remote_env_dir }}: {{ unmanaged_env_files | join(', ') }}.
+          Review and delete them by hand.
+        quiet: true
+
     - name: Statische Secrets nach ~/.env kopieren
       tags: [always]
       no_log: true
@@ -144,15 +211,6 @@
         dest: "{{ remote_env_dir }}/{{ item.path | basename }}"
         mode: "0600"
       register: static_secret_copy
-
-    - name: "*.env.j2 aus secrets/{{ app_environment }}/ finden (templated)"
-      tags: [always]
-      delegate_to: localhost
-      become: no
-      ansible.builtin.find:
-        paths: "{{ local_secrets_path }}"
-        patterns: "*.env.j2"
-      register: secret_templates
 
     - name: Templated Secrets rendern + nach ~/.env kopieren
       tags: [always]
@@ -263,12 +321,18 @@
 
     # caddy.container's volume mount expects the Caddyfile directly next
     # to the Quadlet definition, see quadlets/caddy/caddy.container.
-    - name: Caddyfile rendern
+    - name: Caddyfile rendern (mit dem gepinnten Caddy-Image geprueft, bevor sie die laufende ersetzt)
       tags: [always]
       ansible.builtin.template:
         src: "{{ local_caddyfile_path }}"
         dest: "{{ remote_quadlet_base }}/osa/infrastructure/caddy/Caddyfile"
         mode: "0644"
+        # A syntax error would otherwise replace the live file and take the
+        # only public ingress down at the restart that follows.
+        validate: >-
+          podman run --rm -e LOGGING_USER=validate -e LOGGING_PASSWORD_HASH=validate
+          -v %s:/etc/caddy/Caddyfile:ro,z {{ caddy_image }}
+          caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
       register: caddyfile_copy
 
     # Both volume Quadlets carry the stage name in VolumeName= (instead of

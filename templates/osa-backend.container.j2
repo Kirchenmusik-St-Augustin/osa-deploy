@@ -9,6 +9,10 @@ Pod=osa-backend.pod
    osa-backend-worker.container reads the same variable, so web and worker
    never run different versions while pinned. #}
 Image=ghcr.io/kirchenmusik-st-augustin/osa-backend:{{ osa_backend_image_tag | default('latest') }}
+# The unit counts as started only once the health check passes, so
+# `podman auto-update` can see a broken new image and roll back to the
+# previous one instead of leaving it in place.
+Notify=healthy
 AutoUpdate=registry
 EnvironmentFile=%h/.env/osa-backend.env
 
@@ -28,8 +32,9 @@ PidsLimit=64
 # gunicorn's worker heartbeat file (WorkerTmp) needs a writable /tmp it
 # can create+unlink -- ReadOnlyTmpfs already defaults to true and would
 # cover this on its own, but an explicit mount self-documents the
-# requirement instead of relying on an implicit Podman default.
-Mount=type=tmpfs,target=/tmp,tmpfs-mode=1777
+# requirement instead of relying on an implicit Podman default. noexec: on a
+# read-only root this is the one writable location, and nothing executes from it.
+Mount=type=tmpfs,target=/tmp,tmpfs-mode=1777,noexec
 # gunicorn's --graceful-timeout (Dockerfile CMD) is 120s -- StopTimeout
 # must exceed that so Podman doesn't SIGKILL the arbiter mid-grace-period.
 # Must live here in [Container], not [Service]: that's the only section

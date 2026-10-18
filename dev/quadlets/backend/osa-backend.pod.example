@@ -10,9 +10,11 @@ Before=osa-backend.service osa-backend-pg.service osa-backend-valkey.service osa
 [Pod]
 PodName=osa-backend-pod
 PublishPort=127.0.0.1:21000:8000
-# 5433, not Postgres' default 5432 -- adjust the host port if 5432 is
-# already bound by another project's Postgres sidecar on your dev host.
-PublishPort=127.0.0.1:5433:5432
+# Optional -- publish Postgres on the host loopback only if you need psql
+# from the host. Everything inside the pod uses the container-internal 5432,
+# and any local account on this host can reach a published port. 5433, not
+# 5432, in case another project's Postgres already binds the default port.
+# PublishPort=127.0.0.1:5433:5432
 # Optional: route outgoing SMTP to a local mail-catcher (e.g. Mailpit) so
 # dev/test emails never try to leave the machine. Point this at whatever
 # SMTP-capturing tool you use, or delete the line entirely -- mail sending

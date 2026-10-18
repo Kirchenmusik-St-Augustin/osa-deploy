@@ -7,6 +7,10 @@ Pod=osa-frontend.pod
 {# "latest" follows the nightly auto-update. Setting osa_frontend_image_tag
    (inventory or -e) to a full commit SHA pins this container to one release. #}
 Image=ghcr.io/kirchenmusik-st-augustin/osa-frontend:{{ osa_frontend_image_tag | default('latest') }}
+# The unit counts as started only once the health check passes, so
+# `podman auto-update` can see a broken new image and roll back to the
+# previous one instead of leaving it in place.
+Notify=healthy
 AutoUpdate=registry
 # Must set API_BASE_URL and APP_ENVIRONMENT (GOOGLE_CLIENT_ID optional) --
 # the image's docker-entrypoint.d/40-generate-runtime-config.sh refuses to
@@ -43,9 +47,11 @@ PidsLimit=32
 # static-only site -- verified live: nginx refuses to start without it.
 # Both default to a restrictive mode when Podman auto-tmpfs's them for a
 # root-owned process, hence the explicit tmpfs-mode=1777 override needed
-# now that the container runs as non-root throughout.
-Mount=type=tmpfs,target=/run,tmpfs-mode=1777
-Mount=type=tmpfs,target=/var/cache/nginx,tmpfs-mode=1777
+# now that the container runs as non-root throughout. noexec: neither
+# location needs to be executable, and with a read-only root they are the
+# only places a compromised nginx process could write a payload.
+Mount=type=tmpfs,target=/run,tmpfs-mode=1777,noexec
+Mount=type=tmpfs,target=/var/cache/nginx,tmpfs-mode=1777,noexec
 
 HealthCmd=wget -qO- http://127.0.0.1/ || exit 1
 HealthInterval=30s
