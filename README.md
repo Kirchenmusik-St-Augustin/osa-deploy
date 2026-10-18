@@ -546,8 +546,11 @@ podman exec -it osa-backend python scripts/restore_db.py --force
 
 `--force` is mandatory because `restore_db.py` refuses a restore under
 `APP_ENVIRONMENT=production` by default (protection against accidentally
-overwriting the live database). Always verify afterward that real data
-actually landed, not just that the command exited cleanly.
+overwriting the live database). The script then names the target database
+and the backup and asks you to type the database name before it replaces
+anything (`--yes` skips that question for unattended runs). Always verify
+afterward that real data actually landed, not just that the command exited
+cleanly.
 
 `osa-backend`'s own scheduler additionally runs this restore **automatically,
 every night, on every non-production stage** (the `downsync` job — one hour
@@ -1418,9 +1421,11 @@ podman exec -it osa-backend python scripts/restore_db.py --force
 
 `--force` ist zwingend, weil `restore_db.py` einen Restore bei
 `APP_ENVIRONMENT=production` standardmäßig verweigert (Schutz vor
-versehentlichem Überschreiben der Live-Datenbank). Danach immer
-verifizieren, dass wirklich echte Daten da sind, nicht nur, dass der Befehl
-fehlerfrei durchlief.
+versehentlichem Überschreiben der Live-Datenbank). Das Skript nennt dann die
+Ziel-Datenbank und das Backup und verlangt, dass der Name der Datenbank
+eingetippt wird, bevor es etwas ersetzt (`--yes` überspringt die Rückfrage
+für unbeaufsichtigte Läufe). Danach immer verifizieren, dass wirklich echte
+Daten da sind, nicht nur, dass der Befehl fehlerfrei durchlief.
 
 `osa-backend`s eigener Scheduler führt diesen Restore zusätzlich
 **automatisch, jede Nacht, auf jeder Nicht-Production-Stage** aus (der
