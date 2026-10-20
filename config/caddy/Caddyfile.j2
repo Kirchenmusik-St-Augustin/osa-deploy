@@ -59,6 +59,23 @@ http://127.0.0.1:2020 {
 	}
 }
 
+# Access log of every site. The reset and verification links carry a one-time
+# token (and the address) in the query string, and the API calls the page makes
+# afterwards repeat that address in the Referer header, so both are masked
+# before a line is written; the log is readable through the log viewer.
+(access_log) {
+	log {
+		format filter {
+			wrap json
+			request>uri query {
+				replace token REDACTED
+				delete email
+			}
+			request>headers>Referer regexp "([?&](?:token|email))=[^&]*" "${1}=REDACTED"
+		}
+	}
+}
+
 # Log viewer: protected by basic auth and, when the inventory variable
 # logging_allowed_cidrs lists networks, reachable from those networks only.
 # The route block keeps the written order, so the network check answers 403
@@ -83,7 +100,7 @@ http://127.0.0.1:2020 {
 {{ backend_domain }} {
 	import security_headers
 	import request_body_limit
-	log
+	import access_log
 	import logging_viewer
 	# Compat redirect: hochamt.at/go/{path} existed before the dedicated
 	# go.-subdomain below and redirected there too -- same pattern already
@@ -119,7 +136,7 @@ http://127.0.0.1:2020 {
 {{ backend_domain }} {
 	import security_headers
 	import request_body_limit
-	log
+	import access_log
 	import logging_viewer
 	handle_path /go/* {
 		redir https://{{ shorturl_domain }}{uri} 302
@@ -150,7 +167,7 @@ http://127.0.0.1:2020 {
 {{ frontend_domain }} {
 	import security_headers
 	import frontend_csp
-	log
+	import access_log
 	reverse_proxy 127.0.0.1:21001 {
 		header_down -Server
 	}
@@ -166,7 +183,7 @@ http://127.0.0.1:2020 {
 {{ shorturl_domain }} {
 	import security_headers
 	import request_body_limit
-	log
+	import access_log
 	rewrite * /go{uri}
 	reverse_proxy 127.0.0.1:21000 {
 		header_down -Server
