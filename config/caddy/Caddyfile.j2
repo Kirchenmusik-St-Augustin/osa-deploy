@@ -92,14 +92,19 @@ http://127.0.0.1:2020 {
 		redir https://{{ shorturl_domain }}{uri} 302
 	}
 	# Backend: prefix stripped, backend runs with root_path="/api".
+	# API answers carry personal data (user lists, new passwords) and must
+	# never be stored by a browser or proxy; header_down replaces any value
+	# the backend sends itself.
 	handle_path /api {
 		reverse_proxy 127.0.0.1:21000 {
 			header_down -Server
+			header_down Cache-Control "no-store"
 		}
 	}
 	handle_path /api/* {
 		reverse_proxy 127.0.0.1:21000 {
 			header_down -Server
+			header_down Cache-Control "no-store"
 		}
 	}
 	# Frontend: catch-all fallback.
@@ -120,14 +125,19 @@ http://127.0.0.1:2020 {
 		redir https://{{ shorturl_domain }}{uri} 302
 	}
 	# Backend: prefix stripped, backend runs with root_path="/api".
+	# API answers carry personal data (user lists, new passwords) and must
+	# never be stored by a browser or proxy; header_down replaces any value
+	# the backend sends itself.
 	handle_path /api {
 		reverse_proxy 127.0.0.1:21000 {
 			header_down -Server
+			header_down Cache-Control "no-store"
 		}
 	}
 	handle_path /api/* {
 		reverse_proxy 127.0.0.1:21000 {
 			header_down -Server
+			header_down Cache-Control "no-store"
 		}
 	}
 	# Dedicated backend domain -- no frontend fallback here, it lives on
