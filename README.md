@@ -806,6 +806,9 @@ notes:
   mechanism entirely from production's runtime-injected `API_BASE_URL`
   (see `osa-frontend`'s README for the `VITE_*` vs. runtime-config
   distinction, not repeated here).
+- `VITE_DEV_ALLOWED_HOSTS` lists the host names the Vite dev server accepts
+  besides localhost (comma-separated). Set it to the public dev domain your
+  Caddy passes through; without it Vite answers that domain with 403.
 - `TEST_DATABASE_URL` is dev/test-only, consumed by `osa-backend`'s pytest
   suite (`podman exec osa-backend pytest ...`, see `osa-backend`'s README)
   — not part of production's env template at all. Its database (`osa_test`
@@ -1696,6 +1699,10 @@ bleiben; die vollständige Tier-1/2/3-Aufschlüsselung steht in
   Caddy davor. Ein komplett anderer Mechanismus als das Runtime-injizierte
   `API_BASE_URL` in Produktion (siehe `osa-frontend`s README für die
   `VITE_*`-vs.-Runtime-Config-Unterscheidung, hier nicht wiederholt).
+- `VITE_DEV_ALLOWED_HOSTS` nennt die Hostnamen, die der Vite-Dev-Server
+  neben localhost annimmt (kommagetrennt). Auf die öffentliche Dev-Domain
+  setzen, die dein Caddy durchreicht; ohne den Wert antwortet Vite dieser
+  Domain mit 403.
 - `TEST_DATABASE_URL` ist nur für Dev/Test, genutzt von `osa-backend`s
   Pytest-Suite (`podman exec osa-backend pytest ...`, siehe
   `osa-backend`s README) — in der Produktions-Env-Vorlage gar nicht

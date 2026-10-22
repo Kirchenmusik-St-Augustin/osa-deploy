@@ -96,22 +96,11 @@ http://127.0.0.1:2020 {
 	}
 }
 
-{% if backend_domain == frontend_domain %}
-{{ backend_domain }} {
-	import security_headers
-	import request_body_limit
-	import access_log
-	import logging_viewer
-	# Compat redirect: hochamt.at/go/{path} existed before the dedicated
-	# go.-subdomain below and redirected there too -- same pattern already
-	# proven in local development.
-	handle_path /go/* {
-		redir https://{{ shorturl_domain }}{uri} 302
-	}
-	# Backend: prefix stripped, backend runs with root_path="/api".
-	# API answers carry personal data (user lists, new passwords) and must
-	# never be stored by a browser or proxy; header_down replaces any value
-	# the backend sends itself.
+# Backend: prefix stripped, backend runs with root_path="/api".
+# API answers carry personal data (user lists, new passwords) and must
+# never be stored by a browser or proxy; header_down replaces any value
+# the backend sends itself.
+(backend_api) {
 	handle_path /api {
 		reverse_proxy 127.0.0.1:21000 {
 			header_down -Server
@@ -124,12 +113,35 @@ http://127.0.0.1:2020 {
 			header_down Cache-Control "no-store"
 		}
 	}
+}
+
+# The single page application: security policy plus the frontend upstream.
+(frontend_app) {
+	import frontend_csp
+	reverse_proxy 127.0.0.1:21001 {
+		header_down -Server
+	}
+}
+
+# Compat redirect: hochamt.at/go/{path} existed before the dedicated
+# go.-subdomain below and redirected there too.
+(go_redirect) {
+	handle_path /go/* {
+		redir https://{{ shorturl_domain }}{uri} 302
+	}
+}
+
+{% if backend_domain == frontend_domain %}
+{{ backend_domain }} {
+	import security_headers
+	import request_body_limit
+	import access_log
+	import logging_viewer
+	import go_redirect
+	import backend_api
 	# Frontend: catch-all fallback.
 	handle {
-		import frontend_csp
-		reverse_proxy 127.0.0.1:21001 {
-			header_down -Server
-		}
+		import frontend_app
 	}
 }
 {% else %}
@@ -138,25 +150,8 @@ http://127.0.0.1:2020 {
 	import request_body_limit
 	import access_log
 	import logging_viewer
-	handle_path /go/* {
-		redir https://{{ shorturl_domain }}{uri} 302
-	}
-	# Backend: prefix stripped, backend runs with root_path="/api".
-	# API answers carry personal data (user lists, new passwords) and must
-	# never be stored by a browser or proxy; header_down replaces any value
-	# the backend sends itself.
-	handle_path /api {
-		reverse_proxy 127.0.0.1:21000 {
-			header_down -Server
-			header_down Cache-Control "no-store"
-		}
-	}
-	handle_path /api/* {
-		reverse_proxy 127.0.0.1:21000 {
-			header_down -Server
-			header_down Cache-Control "no-store"
-		}
-	}
+	import go_redirect
+	import backend_api
 	# Dedicated backend domain -- no frontend fallback here, it lives on
 	# frontend_domain below.
 	handle {
@@ -166,20 +161,17 @@ http://127.0.0.1:2020 {
 
 {{ frontend_domain }} {
 	import security_headers
-	import frontend_csp
 	import access_log
-	reverse_proxy 127.0.0.1:21001 {
-		header_down -Server
-	}
+	import frontend_app
 }
 {% endif %}
 
-# Kurz-URL-Redirect-Dienst der Shorturl-Domäne, eigene Subdomain. `rewrite`
-# prependet "/go" vor jeden Request, bevor er an denselben Backend-Port wie
-# oben geht -- Gegenrichtung zum "/api"-Strip-Muster: der öffentliche
-# go-Router ist im Backend unter genau diesem Präfix eingehängt (main.py),
-# über die Haupt-Domain oben aber nicht erreichbar (dort routet nur /api/*
-# zum Backend). Öffentlich, unauthentifiziert -- reiner Redirect-Dienst.
+# Short-URL redirect service on its own subdomain. `rewrite` prepends "/go" to
+# every request before it reaches the same backend port as above -- the
+# inverse of the "/api" prefix-stripping pattern: the public go-router is
+# mounted in the backend under exactly this prefix (main.py), but is not
+# reachable via the main domain above (only /api/* is routed to the backend
+# there). Public and unauthenticated -- a pure redirect service.
 {{ shorturl_domain }} {
 	import security_headers
 	import request_body_limit

@@ -49,7 +49,7 @@ PidsLimit=32
 
 Mount=type=tmpfs,target=/tmp,tmpfs-mode=1777,noexec
 
-# --- HealthCheck Konfiguration ---
+# --- Health check ---
 Notify=healthy
 HealthCmd=CMD /dozzle healthcheck
 HealthInterval=10s
@@ -59,6 +59,7 @@ HealthStartPeriod=5s
 
 [Service]
 Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=default.target
