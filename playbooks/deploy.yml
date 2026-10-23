@@ -14,7 +14,7 @@
 #   ansible-playbook -i inventory/<stage>.ini ... --ask-vault-pass --tags deploy-backend
 #   ansible-playbook -i inventory/<stage>.ini ... --ask-vault-pass --tags deploy-frontend
 
-- name: Deploy/Sync auf dem P-System (einteilung.hochamt.at)
+- name: Deploy and sync the OSA stack on the selected stage
   hosts: vps
   remote_user: service
   gather_facts: yes
@@ -45,6 +45,7 @@
     remote_quadlet_base: "{{ ansible_user_dir }}/.config/containers/systemd"
     remote_systemd_user_dir: "{{ ansible_user_dir }}/.config/systemd/user"
     xdg_runtime_dir: "/run/user/{{ ansible_facts.user_uid }}"
+    registry_prefix: ghcr.io/kirchenmusik-st-augustin
 
     # Quadlet source folder -> destination path under remote_quadlet_base.
     quadlet_targets:
@@ -67,15 +68,15 @@
     # through this Ansible flow -- even though it is one of the four valid
     # APP_ENVIRONMENT values in the backend itself (see
     # osa-backend/app/core/config.py's _VALID_ENVIRONMENTS).
-    - name: app_environment gegen die gueltigen Ansible-Deploy-Stages pruefen
+    - name: Validate app_environment against the valid deploy stages
       tags: [always]
       ansible.builtin.assert:
         that:
           - "app_environment in ['test', 'qa', 'production']"
         fail_msg: >-
-          app_environment='{{ app_environment }}' ist ungueltig. Muss eines
-          von test/qa/production sein ("development" wird nie ueber
-          osa-deploy ausgerollt).
+          app_environment='{{ app_environment }}' is invalid. It must be one of
+          test/qa/production ("development" is never rolled out through
+          osa-deploy).
 
     - name: Refuse placeholder or malformed inventory values
       tags: [always]
@@ -104,7 +105,7 @@
           secrets/{{ 'production' if app_environment == 'production' else 'nonproduction' }}/koofr.yml
           from its .example file and encrypt it with ansible-vault.
 
-    - name: Verzeichnisstruktur anlegen
+    - name: Create the directory structure
       tags: [always]
       loop:
         - "{{ remote_env_dir }}"
@@ -124,23 +125,29 @@
     # with a permission error. Both commands must run under
     # "podman unshare", not a plain chown/chmod - afterwards the directory
     # belongs to the mapped UID, and the calling user itself can no longer
-    # read it directly from outside a "podman unshare" shell. A no-op on
-    # already-initialized directories (chown/chmod are idempotent).
-    - name: PostgreSQL-Datenverzeichnis-Ownership sicherstellen (Rootless-Mapping)
+    # read it directly from outside a "podman unshare" shell. The recursive
+    # change only runs when the top-level directory differs from the wanted
+    # state (a fresh directory), so a deploy never walks the live database.
+    # Under --check the directory may not exist yet, hence the lenient
+    # failure condition.
+    - name: Read the PostgreSQL data directory owner and mode as seen inside the user namespace
       tags: [always]
       ansible.builtin.command: >-
-        podman unshare chown -R 999:999
+        podman unshare stat -c '%u:%g:%a'
         {{ ansible_user_dir }}/data/osa/{{ app_environment }}/postgres
+      register: pg_dir_state
       changed_when: false
+      check_mode: false
+      failed_when: pg_dir_state.rc != 0 and not ansible_check_mode
 
-    - name: PostgreSQL-Datenverzeichnis-Berechtigungen sicherstellen
+    - name: Fix PostgreSQL data directory ownership and mode (rootless UID mapping)
       tags: [always]
+      when: pg_dir_state.stdout | trim != '999:999:700'
       ansible.builtin.command: >-
-        podman unshare chmod 700
+        podman unshare sh -c 'chown -R 999:999 "$0" && chmod 700 "$0"'
         {{ ansible_user_dir }}/data/osa/{{ app_environment }}/postgres
-      changed_when: false
 
-    - name: "*.env aus secrets/{{ app_environment }}/ finden (statisch)"
+    - name: "Find static *.env files in secrets/{{ app_environment }}/"
       tags: [always]
       delegate_to: localhost
       become: no
@@ -149,7 +156,7 @@
         patterns: "*.env"
       register: secret_files
 
-    - name: "*.env.j2 aus secrets/{{ app_environment }}/ finden (templated)"
+    - name: "Find templated *.env.j2 files in secrets/{{ app_environment }}/"
       tags: [always]
       delegate_to: localhost
       become: no
@@ -200,7 +207,7 @@
           Review and delete them by hand.
         quiet: true
 
-    - name: Statische Secrets nach ~/.env kopieren
+    - name: Copy static secrets to ~/.env
       tags: [always]
       no_log: true
       loop: "{{ secret_files.files }}"
@@ -212,7 +219,7 @@
         mode: "0600"
       register: static_secret_copy
 
-    - name: Templated Secrets rendern + nach ~/.env kopieren
+    - name: Render templated secrets and copy them to ~/.env
       tags: [always]
       no_log: true
       loop: "{{ secret_templates.files }}"
@@ -238,7 +245,7 @@
              | map('regex_replace', '[.]j2$', '')
              | list }}
 
-    - name: Quadlet-Verzeichnisse anlegen
+    - name: Create the Quadlet directories
       tags: [always]
       loop: "{{ quadlet_targets }}"
       loop_control:
@@ -252,7 +259,7 @@
     # own register) -- the restart trigger further down must also react to
     # changes in the quadlet definition itself, not only to changes in the
     # Caddyfile.
-    - name: Quadlet-Dateien kopieren
+    - name: Copy the Quadlet files
       tags: [always]
       loop: "{{ quadlet_targets | rejectattr('src', 'equalto', 'caddy') | list }}"
       loop_control:
@@ -266,7 +273,7 @@
     # Kept separate from the generic copy above so a change to the quadlet
     # definition itself (e.g. its volume mount) triggers the same Caddy
     # restart as a change to the Caddyfile.
-    - name: Caddy-Quadlet-Dateien kopieren
+    - name: Copy the Caddy Quadlet files
       tags: [always]
       ansible.builtin.copy:
         src: "{{ local_quadlets_path }}/caddy/"
@@ -277,7 +284,7 @@
     # Both Quadlets have stage-dependent content (data path) -- kept
     # separate from the generic directory copy above since they must be
     # rendered rather than just copied.
-    - name: "PostgreSQL-Quadlet rendern (Volume-Pfad ist stage-abhaengig)"
+    - name: "Render the PostgreSQL Quadlet (volume path depends on the stage)"
       tags: [always]
       ansible.builtin.template:
         src: "{{ local_templates_path }}/osa-backend-pg.container.j2"
@@ -285,7 +292,7 @@
         mode: "0644"
       register: pg_quadlet_render
 
-    - name: "Valkey-Quadlet rendern (Volume-Pfad ist stage-abhaengig)"
+    - name: "Render the Valkey Quadlet (volume path depends on the stage)"
       tags: [always]
       ansible.builtin.template:
         src: "{{ local_templates_path }}/osa-backend-valkey.container.j2"
@@ -295,7 +302,7 @@
 
     # The three application Quadlets carry the image tag (osa_*_image_tag,
     # default "latest"), so they are rendered like the Quadlets above.
-    - name: "Backend-Quadlet rendern (Image-Tag ist pro Stage pinnbar)"
+    - name: "Render the backend Quadlet (image tag can be pinned per stage)"
       tags: [always]
       ansible.builtin.template:
         src: "{{ local_templates_path }}/osa-backend.container.j2"
@@ -303,7 +310,7 @@
         mode: "0644"
       register: backend_quadlet_render
 
-    - name: "Worker-Quadlet rendern (gleicher Image-Tag wie das Backend)"
+    - name: "Render the worker Quadlet (same image tag as the backend)"
       tags: [always]
       ansible.builtin.template:
         src: "{{ local_templates_path }}/osa-backend-worker.container.j2"
@@ -311,7 +318,7 @@
         mode: "0644"
       register: worker_quadlet_render
 
-    - name: "Frontend-Quadlet rendern (Image-Tag ist pro Stage pinnbar)"
+    - name: "Render the frontend Quadlet (image tag can be pinned per stage)"
       tags: [always]
       ansible.builtin.template:
         src: "{{ local_templates_path }}/osa-frontend.container.j2"
@@ -321,7 +328,7 @@
 
     # caddy.container's volume mount expects the Caddyfile directly next
     # to the Quadlet definition, see quadlets/caddy/caddy.container.
-    - name: Caddyfile rendern (mit dem gepinnten Caddy-Image geprueft, bevor sie die laufende ersetzt)
+    - name: Render the Caddyfile (validated with the pinned Caddy image before it replaces the live one)
       tags: [always]
       ansible.builtin.template:
         src: "{{ local_caddyfile_path }}"
@@ -339,7 +346,7 @@
     # a hardcoded "-prod"), hence rendered rather than just copied --
     # otherwise the identical file would also land on test/qa and wrongly
     # name their volumes "prod".
-    - name: "Caddy-Data-Volume-Quadlet rendern (Volume-Name ist stage-abhaengig)"
+    - name: "Render the Caddy data volume Quadlet (volume name depends on the stage)"
       tags: [always]
       ansible.builtin.template:
         src: "{{ local_templates_path }}/caddy-data.volume.j2"
@@ -347,7 +354,7 @@
         mode: "0644"
       register: caddy_data_volume_render
 
-    - name: "Caddy-Config-Volume-Quadlet rendern (Volume-Name ist stage-abhaengig)"
+    - name: "Render the Caddy config volume Quadlet (volume name depends on the stage)"
       tags: [always]
       ansible.builtin.template:
         src: "{{ local_templates_path }}/caddy-config.volume.j2"
@@ -355,7 +362,7 @@
         mode: "0644"
       register: caddy_config_volume_render
 
-    - name: Native systemd-Units kopieren (podman-prune Service + Timer, kein Quadlet, eigener Zielpfad)
+    - name: Copy the native systemd units (podman-prune service and timer; not Quadlets, separate target path)
       tags: [always]
       ansible.builtin.copy:
         src: "{{ local_timers_path }}/"
@@ -370,7 +377,7 @@
       environment:
         XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
 
-    - name: Stack-Dienste + Timer aktivieren + starten
+    - name: Enable and start the stack services and timers
       tags: [always]
       loop: "{{ managed_units_safe }}"
       ansible.builtin.systemd:
@@ -457,7 +464,7 @@
       # nothing must not be reported as a change.
       changed_when: false
 
-    - name: Caddy neu starten, falls sich die Caddyfile, das Quadlet oder dessen Secrets geändert haben
+    - name: Restart Caddy if the Caddyfile, the Quadlet or its secrets changed
       tags: [always]
       when: >-
         caddyfile_copy.changed or caddy_quadlet_copy.changed
@@ -479,7 +486,7 @@
     # rendered into the same "osa/osa-backend" directory. Without this task,
     # a quadlet-only change (e.g. a hardening flag or a new image tag) would
     # sit on disk without ever reaching the running container.
-    - name: osa-backend-pod neu starten, falls Backend-/Worker-/PG-/Valkey-Quadlet oder deren Secrets sich geaendert haben
+    - name: Restart osa-backend-pod if the backend, worker, PostgreSQL or Valkey Quadlet or their secrets changed
       tags: [always]
       when: >-
         (quadlet_copy_results.results
@@ -501,7 +508,7 @@
         XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
       ignore_errors: "{{ ansible_check_mode }}"
 
-    - name: osa-frontend-pod neu starten, falls das Frontend-Quadlet oder dessen Secrets sich geaendert haben
+    - name: Restart osa-frontend-pod if the frontend Quadlet or its secrets changed
       tags: [always]
       when: >-
         quadlet_copy_results.results
@@ -518,7 +525,7 @@
         XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
       ignore_errors: "{{ ansible_check_mode }}"
 
-    - name: logging-dozzle neu starten, falls dessen Quadlet sich geaendert hat
+    - name: Restart logging-dozzle if its Quadlet changed
       tags: [always]
       when: >-
         quadlet_copy_results.results
@@ -536,71 +543,28 @@
     # ------------------------------------------------------------------
     # Immediate deploy (only with an explicit --tags) -- pulls the image
     # tag the Quadlet uses (osa_*_image_tag, default "latest") and restarts
-    # the affected pod, instead of waiting for the nightly
-    # podman-auto-update.timer.
+    # the affected pod when the running container does not use that image
+    # yet, instead of waiting for the nightly podman-auto-update.timer.
+    # "-e force_restart=true" restarts the pod regardless.
     # ------------------------------------------------------------------
-    # podman pull writes its progress (including "Copying blob") to stderr,
-    # on every single call, regardless of whether the image actually
-    # changed. Only the final image ID on stdout is reliable -- the same
-    # value "podman image inspect --format '{{.Id}}'" would report.
-    - name: "Sofort-Deploy osa-backend: aktuelle lokale Image-ID ermitteln"
+    - name: Immediate deploy of osa-backend
       tags: [never, deploy-backend]
-      ansible.builtin.command: >-
-        podman image inspect ghcr.io/kirchenmusik-st-augustin/osa-backend:{{ osa_backend_image_tag | default('latest') }}
-        --format '{{ "{{" }}.Id{{ "}}" }}'
-      register: osa_backend_image_id_before
-      environment:
-        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
-      changed_when: false
-      failed_when: false
+      ansible.builtin.include_tasks:
+        file: tasks/immediate_deploy.yml
+        apply:
+          tags: [deploy-backend]
+      vars:
+        deploy_image: "{{ registry_prefix }}/osa-backend:{{ osa_backend_image_tag | default('latest') }}"
+        deploy_container: osa-backend
+        deploy_pod_unit: osa-backend-pod.service
 
-    - name: "Sofort-Deploy osa-backend: Image pullen"
-      tags: [never, deploy-backend]
-      ansible.builtin.command: podman pull ghcr.io/kirchenmusik-st-augustin/osa-backend:{{ osa_backend_image_tag | default('latest') }}
-      register: osa_backend_pull_result
-      environment:
-        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
-      changed_when: osa_backend_image_id_before.stdout != osa_backend_pull_result.stdout_lines[-1]
-
-    - name: "Sofort-Deploy osa-backend: Pod neu starten"
-      # Do NOT restart osa-backend.service directly: the container is
-      # bound to osa-backend-pod.service via a generated BindsTo= -- a
-      # container restart stops the whole pod, but nothing brings it back
-      # up afterward on its own (verified empirically). The pod service
-      # itself correctly pulls the contained container back up via its
-      # Wants=/Before=.
-      tags: [never, deploy-backend]
-      ansible.builtin.systemd:
-        scope: user
-        name: osa-backend-pod.service
-        state: restarted
-      environment:
-        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
-
-    - name: "Sofort-Deploy osa-frontend: aktuelle lokale Image-ID ermitteln"
+    - name: Immediate deploy of osa-frontend
       tags: [never, deploy-frontend]
-      ansible.builtin.command: >-
-        podman image inspect ghcr.io/kirchenmusik-st-augustin/osa-frontend:{{ osa_frontend_image_tag | default('latest') }}
-        --format '{{ "{{" }}.Id{{ "}}" }}'
-      register: osa_frontend_image_id_before
-      environment:
-        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
-      changed_when: false
-      failed_when: false
-
-    - name: "Sofort-Deploy osa-frontend: Image pullen"
-      tags: [never, deploy-frontend]
-      ansible.builtin.command: podman pull ghcr.io/kirchenmusik-st-augustin/osa-frontend:{{ osa_frontend_image_tag | default('latest') }}
-      register: osa_frontend_pull_result
-      environment:
-        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
-      changed_when: osa_frontend_image_id_before.stdout != osa_frontend_pull_result.stdout_lines[-1]
-
-    - name: "Sofort-Deploy osa-frontend: Pod neu starten"
-      tags: [never, deploy-frontend]
-      ansible.builtin.systemd:
-        scope: user
-        name: osa-frontend-pod.service
-        state: restarted
-      environment:
-        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+      ansible.builtin.include_tasks:
+        file: tasks/immediate_deploy.yml
+        apply:
+          tags: [deploy-frontend]
+      vars:
+        deploy_image: "{{ registry_prefix }}/osa-frontend:{{ osa_frontend_image_tag | default('latest') }}"
+        deploy_container: osa-frontend
+        deploy_pod_unit: osa-frontend-pod.service

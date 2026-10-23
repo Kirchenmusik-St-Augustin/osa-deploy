@@ -490,7 +490,9 @@ ansible-playbook -i inventory/production.ini playbooks/deploy.yml --ask-vault-pa
 ```
 
 Pulls the image tag the Quadlet uses (`latest` unless the release is pinned,
-see below) and restarts the corresponding pod.
+see below) and restarts the corresponding pod, but only when the running
+container does not use the pulled image yet. Add `-e force_restart=true` to
+restart the pod regardless.
 
 ### Pin a release (hold back or roll back an image)
 
@@ -1365,7 +1367,9 @@ ansible-playbook -i inventory/production.ini playbooks/deploy.yml --ask-vault-pa
 ```
 
 Pullt das Image-Tag, das die Quadlet verwendet (`latest`, solange kein
-Release gepinnt ist, siehe unten), und startet den zugehörigen Pod neu.
+Release gepinnt ist, siehe unten), und startet den zugehörigen Pod neu, aber
+nur, wenn der laufende Container das gepullte Image noch nicht verwendet.
+Mit `-e force_restart=true` wird der Pod in jedem Fall neu gestartet.
 
 ### Release pinnen (Image zurückhalten oder zurückrollen)
 

@@ -14,7 +14,7 @@
 # only when requested with -e full_upgrade=true.
 
 - name: Base configuration for a new VPS
-  hosts: all
+  hosts: vps
   become: yes
   vars:
     local_ssh_pub_key: "{{ lookup('file', '~/.ssh/id_ed25519.pub') }}"
@@ -57,7 +57,6 @@
             update_cache: yes
             cache_valid_time: 3600
             name:
-              - git
               - podman
               - netavark
               - aardvark-dns
@@ -72,8 +71,6 @@
               # every "podman pod create" fail ("finding pause binary: exec:
               # \"catatonit\": executable file not found in $PATH").
               - catatonit
-              - curl
-              - tar
               - unattended-upgrades
             state: present
 
@@ -95,7 +92,6 @@
           when: full_upgrade | bool
         - ansible.builtin.dnf:
             name:
-              - git
               - podman
               - netavark
               - aardvark-dns
@@ -103,8 +99,6 @@
               - sudo
               - shadow-utils
               - passt
-              - curl
-              - tar
               - dnf-automatic
             state: present
 
@@ -132,7 +126,6 @@
             state: latest
         - community.general.zypper:
             name:
-              - git
               - podman
               - netavark
               - aardvark-dns
@@ -140,8 +133,6 @@
               - sudo
               - shadow
               - passt
-              - curl
-              - tar
             state: present
 
     # ------------------------------------------------------------------
@@ -540,16 +531,13 @@
   handlers:
     - name: reload sysctl
       ansible.builtin.command: sysctl --system
-      listen: reload sysctl
 
     - name: restart sshd
       ansible.builtin.systemd:
         name: "{{ 'ssh' if ansible_os_family == 'Debian' else 'sshd' }}"
         state: restarted
-      listen: restart sshd
 
     - name: restart journald
       ansible.builtin.systemd:
         name: systemd-journald
         state: restarted
-      listen: restart journald
