@@ -6,32 +6,23 @@
 # pre-built from ghcr.io and are pulled in automatically by the already-
 # active podman-auto-update.timer.
 #
-# Usage: ansible-playbook -i inventory/<stage>.ini playbooks/deploy.yml --ask-vault-pass --check --diff
-#        ansible-playbook -i inventory/<stage>.ini playbooks/deploy.yml --ask-vault-pass
-# <stage> is one of the files in inventory/ (production/test/qa).
+# Usage (the ./osa wrapper supplies the inventory, osa_site_dir and the vault
+# password file; run ./osa check <stage> for a dry run, ./osa deploy <stage>
+# to apply). <stage> is a directory of the site repository (production/test/qa).
 #
 # Immediate deploy instead of waiting for the nightly auto-update run:
-#   ansible-playbook -i inventory/<stage>.ini ... --ask-vault-pass --tags deploy-backend
-#   ansible-playbook -i inventory/<stage>.ini ... --ask-vault-pass --tags deploy-frontend
+#   ./osa deploy <stage> --tags deploy-backend
+#   ./osa deploy <stage> --tags deploy-frontend
 
 - name: Deploy and sync the OSA stack on the selected stage
   hosts: vps
   remote_user: service
   gather_facts: yes
-  # Explicit vars_files instead of inventory/group_vars/: an
-  # automatically-loaded group variable applies to EVERY play that
-  # targets this host -- including setup_vps.yml (hosts: all), which
-  # never references koofr_user/koofr_password at all. vars_files scopes
-  # the file to this one play instead, so only a deploy.yml run needs a
-  # vault password for it. Production receives the account that writes and
-  # prunes the backups; every other stage receives a second, read-only
-  # account (non-production stages only download the latest production
-  # backup), so a lower-trust host never holds a credential that can
-  # overwrite or delete them.
-  vars_files:
-    - "../secrets/{{ 'production' if app_environment == 'production' else 'nonproduction' }}/koofr.yml"
   vars:
-    local_secrets_path: "../secrets/{{ app_environment }}"
+    # osa_site_dir is passed by the ./osa wrapper (-e osa_site_dir=<abs path>):
+    # the directory of the stage in the site repository, holding
+    # inventory.ini and secrets/.
+    local_secrets_path: "{{ osa_site_dir }}/secrets"
     local_quadlets_path: "../quadlets"
     local_templates_path: "../templates"
     local_timers_path: "../systemd-timers"
@@ -72,9 +63,11 @@
       tags: [always]
       ansible.builtin.assert:
         that:
+          - osa_site_dir is defined
           - "app_environment in ['test', 'qa', 'production']"
         fail_msg: >-
-          app_environment='{{ app_environment }}' is invalid. It must be one of
+          app_environment='{{ app_environment }}' is invalid (or osa_site_dir
+          is not set; run the playbook through ./osa). It must be one of
           test/qa/production ("development" is never rolled out through
           osa-deploy).
 
@@ -90,20 +83,6 @@
         - "{{ backend_domain }}"
         - "{{ frontend_domain }}"
         - "{{ shorturl_domain }}"
-
-    # A vars_files entry whose file does not exist is skipped without any
-    # message, so a missing or empty Koofr file would otherwise surface as an
-    # undefined variable inside a no_log template task.
-    - name: Require the Koofr credentials of this stage
-      tags: [always]
-      ansible.builtin.assert:
-        that:
-          - koofr_user is defined
-          - koofr_password is defined
-        fail_msg: >-
-          koofr_user/koofr_password are not defined. Create
-          secrets/{{ 'production' if app_environment == 'production' else 'nonproduction' }}/koofr.yml
-          from its .example file and encrypt it with ansible-vault.
 
     - name: Create the directory structure
       tags: [always]
@@ -147,7 +126,7 @@
         podman unshare sh -c 'chown -R 999:999 "$0" && chmod 700 "$0"'
         {{ ansible_user_dir }}/data/osa/{{ app_environment }}/postgres
 
-    - name: "Find static *.env files in secrets/{{ app_environment }}/"
+    - name: "Find static *.env files in the secrets directory of the stage"
       tags: [always]
       delegate_to: localhost
       become: no
@@ -156,7 +135,7 @@
         patterns: "*.env"
       register: secret_files
 
-    - name: "Find templated *.env.j2 files in secrets/{{ app_environment }}/"
+    - name: "Find templated *.env.j2 files in the secrets directory of the stage"
       tags: [always]
       delegate_to: localhost
       become: no
@@ -175,7 +154,6 @@
       ansible.builtin.shell: >-
         grep -L '^\$ANSIBLE_VAULT;'
         {{ (secret_files.files + secret_templates.files) | map(attribute='path') | map('quote') | join(' ') }}
-        {{ ('../secrets/' ~ ('production' if app_environment == 'production' else 'nonproduction') ~ '/koofr.yml') | quote }}
         || true
       register: unencrypted_secret_files
       failed_when: unencrypted_secret_files.stdout | trim | length > 0
@@ -431,7 +409,7 @@
         that:
           - osa_app_password_valid
         fail_msg: >-
-          DATABASE_URL in secrets/{{ app_environment }}/osa-backend.env.j2
+          DATABASE_URL in the stage's secrets/osa-backend.env.j2
           must use the user osa_app with a password of at least 16
           characters from A-Z, a-z, 0-9 and . _ ~ - (no URL escaping).
 
@@ -498,7 +476,7 @@
         or backend_quadlet_render.changed
         or worker_quadlet_render.changed
         or (changed_secret_files
-          | intersect(['osa-backend.env', 'osa-backend-pg.env', 'osa-backend-valkey.env'])
+          | intersect(['osa-backend.env', 'osa-backend-worker.env', 'osa-backend-pg.env', 'osa-backend-valkey.env'])
           | length > 0)
       ansible.builtin.systemd:
         scope: user

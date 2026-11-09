@@ -3,6 +3,9 @@
 *.log
 __pycache__/
 *.pyc
+.coverage
+.pytest_cache/
+.ruff_cache/
 
 # Decrypted or exported secret material must never be committed.
 *.dec

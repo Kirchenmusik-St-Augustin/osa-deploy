@@ -1,0 +1,9 @@
+title = "osa-deploy secret scan"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "The test suite uses a fixed fake vault password."
+targetRules = ["generic-api-key"]
+paths = ['''^tests/''']

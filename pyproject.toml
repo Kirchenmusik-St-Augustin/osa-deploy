@@ -1,0 +1,37 @@
+[project]
+name = "osa-deploy"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "I", "B", "S", "UP", "SIM", "PT", "C90", "RUF", "ANN",
+    "RET", "ARG", "ERA", "T20", "BLE", "DTZ", "A", "PTH", "FBT", "N", "TRY",
+    "PERF", "C4", "TC", "SLF", "PL", "EM", "PIE", "FURB", "ISC",
+]
+ignore = [
+    "PLR2004",  # plain numbers in comparisons are fine in a small tool
+    "S108",     # /dev/shm is the intended location of secrets scratch space
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 8
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S603", "S607", "ANN401", "SLF001", "PLR0913", "FBT"]
+
+[tool.pyright]
+include = ["osa_tools", "tests"]
+typeCheckingMode = "strict"
+pythonVersion = "3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=osa_tools --cov-branch --cov-report=term-missing --cov-fail-under=95"
+
+[tool.coverage.run]
+branch = true

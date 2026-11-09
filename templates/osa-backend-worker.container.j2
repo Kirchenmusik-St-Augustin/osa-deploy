@@ -14,6 +14,9 @@ Image=ghcr.io/kirchenmusik-st-augustin/osa-backend:{{ osa_backend_image_tag | de
 Notify=healthy
 AutoUpdate=registry
 EnvironmentFile=%h/.env/osa-backend.env
+# Backup storage credentials (Koofr) exist only for the process that runs
+# the backup and downsync jobs; the web container never receives them.
+EnvironmentFile=%h/.env/osa-backend-worker.env
 # Same image/entrypoint as osa-backend.container -- SKIP_MIGRATIONS
 # prevents this container from re-running `alembic upgrade head`
 # concurrently with the web container's own migration run on every
