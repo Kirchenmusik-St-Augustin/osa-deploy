@@ -266,6 +266,12 @@ Key einmalig von Hand, weil `./osa` nur diesen Key anbietet: die Zeile aus
 `operator_keys.pub` an `~/.ssh/authorized_keys` von `admin` und von `service`
 anhängen (über ein bestehendes Login), dann mit `./osa ssh <stage>` prüfen.
 
+`./osa setup` installiert für `admin` und `service` genau die Keys aus
+`operator_keys.pub` und entfernt jeden anderen Key aus deren `authorized_keys`.
+Den Lauf erst starten, nachdem der Operator-Key mit `./osa ssh <stage>`
+geprüft wurde, und keinen Key auf dem Server lassen, der in `operator_keys.pub`
+fehlt.
+
 ### 4.4 Erstes Deploy
 
 ```bash

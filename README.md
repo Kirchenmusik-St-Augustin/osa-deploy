@@ -255,6 +255,11 @@ by hand, because `./osa` offers only that key: append the line of
 `operator_keys.pub` to `~/.ssh/authorized_keys` of both `admin` and `service`
 (through an existing login), then check with `./osa ssh <stage>`.
 
+`./osa setup` installs exactly the keys of `operator_keys.pub` for `admin` and
+`service` and removes every other key from their `authorized_keys`. Run it
+only after the operator key has been checked with `./osa ssh <stage>`, and
+never keep a key on the server that is missing from `operator_keys.pub`.
+
 ### 4.4 First deploy
 
 ```bash

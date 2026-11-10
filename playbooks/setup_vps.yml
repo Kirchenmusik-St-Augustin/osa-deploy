@@ -280,11 +280,16 @@
         group: "{{ item }}"
         mode: "0700"
 
-    - name: Add the operator public keys to authorized_keys
+    # One task, one list: afterwards exactly the operator keys can log in as
+    # either user. "exclusive" removes every other key, so a key that is
+    # dropped from operator_keys.pub (a person who left, a retired key) loses
+    # its access with the next run instead of staying on the host forever.
+    - name: Install exactly the operator public keys for admin and service
       loop: [admin, service]
       ansible.posix.authorized_key:
         user: "{{ item }}"
         key: "{{ operator_public_keys }}"
+        exclusive: true
         state: present
 
     # ------------------------------------------------------------------
@@ -470,15 +475,20 @@
     # ------------------------------------------------------------------
     # Key-only for every account (the keys were distributed in section 5, so
     # this runs after them). New settings are inserted before the first
-    # "Match" block, because anything after it only applies to that block.
-    # validate refuses a configuration sshd cannot parse before the file is
-    # replaced and sshd restarted.
+    # "Match" block, because anything after it only applies to that block. The
+    # managed block of the admin task further down counts as a Match block:
+    # its begin marker comes first, so a line is never inserted inside it
+    # (where that task would delete it again and report a change on every
+    # run). validate refuses a configuration sshd cannot parse before the file
+    # is replaced and sshd restarted.
     - name: Harden sshd (key-only authentication, no root login)
+      register: sshd_hardening
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
         regexp: "{{ item.regexp }}"
         line: "{{ item.line }}"
-        insertbefore: "^Match "
+        insertbefore: "^(# BEGIN ANSIBLE MANAGED BLOCK - ADMIN SSH|Match )"
+        firstmatch: true
         validate: /usr/sbin/sshd -t -f %s
       loop:
         - { regexp: "^#?PermitRootLogin", line: "PermitRootLogin no" }
@@ -500,7 +510,10 @@
       changed_when: false
       check_mode: false
 
+    # A dry run does not write the lines above, so the effective values can
+    # only be checked when nothing was left to change.
     - name: Assert that no drop-in file weakens the sshd hardening
+      when: not ansible_check_mode or not sshd_hardening.changed
       ansible.builtin.assert:
         that:
           - "'permitrootlogin no' in sshd_effective.stdout_lines"
