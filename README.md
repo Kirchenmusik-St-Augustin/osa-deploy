@@ -66,8 +66,8 @@ runs containers. Containers are described as systemd Quadlets
 - The application containers use `Image=…:latest` and `AutoUpdate=registry`:
   Podman's own `podman-auto-update.timer` pulls and restarts them daily,
   without Ansible; the first `./osa deploy` of a stage enables that timer (the
-  package ships it switched off). `./osa deploy` is needed to distribute configuration, for
-  an immediate deploy and to pin a release.
+  package ships it switched off). `./osa deploy` is needed to distribute
+  configuration, for an immediate deploy and to pin a release.
 - Dozzle is a read-only log viewer behind basic auth. The weekly
   `podman-prune.timer` runs `podman system prune -a -f` on the host.
 
@@ -123,7 +123,7 @@ journalctl --user -u osa-backend-pod -n 100
 The log viewer is at `https://einteilung.hochamt.at/logging/dozzle` (basic
 auth, the login is in `secrets/caddy.env`). The units are `caddy.service`,
 `osa-backend-pod.service`, `osa-frontend-pod.service`,
-`logging-dozzle.service` and `podman-prune.timer`.
+`logging-dozzle.service`, `podman-auto-update.timer` and `podman-prune.timer`.
 
 ### 3.2 Restart
 
@@ -135,6 +135,13 @@ systemctl --user restart osa-backend-pod.service    # backend, worker, PostgreSQ
 systemctl --user restart osa-frontend-pod.service
 systemctl --user restart caddy.service
 ```
+
+To reboot the host (a pending kernel update shows as `/var/run/reboot-required`)
+you need `sudo`, which `service` does not have: open the shell with
+`./osa ssh production`, switch with `su - admin` (the sudo password of `admin`,
+see 4.3) and run `sudo systemctl reboot`. The stack comes back on its own and
+the site is unreachable for about a minute; afterwards
+`systemctl --user list-units --failed` must be empty.
 
 ### 3.3 Roll back an image
 
@@ -178,9 +185,9 @@ the README of `osa-backend`.
 **Empty data directory.** When `osa-backend-pg` starts against a directory
 without a cluster (a new stage, or after a PostgreSQL major-version bump that
 moved the old directory aside), the database comes up migrated but empty. Pull
-the image first (`podman pull docker.io/library/postgres:<version>`, the
-version is in `templates/osa-backend-pg.container.j2`) and start the service
-in the same sitting: Quadlet tears a pod down when it looks empty, and an
+the image first (`podman pull <image>`, with the full reference of the `Image=`
+line in `templates/osa-backend-pg.container.j2`, tag and digest) and start the
+service in the same sitting: Quadlet tears a pod down when it looks empty, and an
 unfinished pull counts as empty. The weekly prune removes images that no
 container uses, so a pre-pulled image must be started within the week or the
 prune timer stopped for the gap. The role `osa_app` lives in the data
@@ -255,12 +262,15 @@ cd ../../../../osa-deploy
 The playbook installs the packages from the distribution, checks the Podman
 version, creates `admin` (sudo) and `service` (rootless Podman), installs the
 keys from `operator_keys.pub` for both, tunes rootless Podman, **reboots
-partway through**, locks the firewall down to SSH/80/443 (SSH rate-limited)
+partway through** (only when the upgrade requires it), locks the firewall down to SSH/80/443 (SSH rate-limited)
 and hardens SSH at the end (key-only login, no root login, three attempts,
 no X11). It fails if a file below `/etc/ssh/sshd_config.d/` overrides these
 settings. Daily unattended security updates are switched on. Connect once by
 hand (`ssh service@<host>`) and verify the host fingerprint over an
-independent channel before the first run: host key checking is strict.
+independent channel before the first run: host key checking is strict. After
+a reinstall of an existing host remove the old entry first (`ssh-keygen -R
+<host>` and `ssh-keygen -R <ip>`) and compare the new fingerprint with the one
+the provider shows in its panel.
 
 A server that was set up before the operator key existed needs the key once
 by hand, because `./osa` offers only that key: append the line of
@@ -271,7 +281,11 @@ The first run generates the sudo password of `admin` and prints it twice: right
 after it is set and again in a box at the end of the run. Write it into the
 password manager and into the access note (`./osa vault <stage> edit
 ../../credentials.md`) at once; it exists nowhere else, and every later
-`./osa setup` run needs it as the BECOME password.
+`./osa setup` run needs it as the BECOME password. A later run never resets
+it. If it is lost, log in at the provider's console as `root` (the local login
+keeps working, only SSH is closed to `root`), run `passwd admin` with letters
+and digits only (the console often uses another keyboard layout) and update
+the access note.
 
 `./osa setup` installs exactly the keys of `operator_keys.pub` for `admin` and
 `service` and removes every other key from their `authorized_keys`. Run it
@@ -280,13 +294,21 @@ never keep a key on the server that is missing from `operator_keys.pub`.
 
 ### 4.4 First deploy
 
+On a new stage pull the PostgreSQL image **before** the first deploy (see
+"Empty data directory" in 3.4): the deploy starts the pod, and an unfinished
+pull makes Quadlet tear it down.
+
 ```bash
+./osa ssh production
+podman pull <image>           # the Image= line of templates/osa-backend-pg.container.j2
+exit
 ./osa check production        # dry run with diff
 ./osa deploy production
 ```
 
-Then pull the PostgreSQL image as described in 3.4 if the data directory is
-new, restore the data (3.4) and run the check in 5.4.
+The first deploy takes several minutes (the images are pulled, PostgreSQL
+creates its data directory). Then restore the data and restart the backend pod
+as described in 3.4, and run the check in 5.4.
 
 ### 4.5 Test and QA stages
 
@@ -321,8 +343,8 @@ run and removes both afterwards. Everything after the stage name goes to
 ### 5.2 Day-2 deploy
 
 `./osa check production` and `./osa deploy production` sync the secrets, the
-Quadlet definitions, the Caddyfile and the native prune units and keep the
-whole stack running. They build no image, clone no repository and restore no
+Quadlet definitions, the Caddyfile and the native prune units, enable the
+nightly update and the weekly prune timer and keep the whole stack running. They build no image, clone no repository and restore no
 database. A changed secret file restarts exactly the units that read it:
 `caddy.env` restarts Caddy; `osa-backend.env`, `osa-backend-worker.env`,
 `osa-backend-pg.env` and `osa-backend-valkey.env` restart the backend pod;

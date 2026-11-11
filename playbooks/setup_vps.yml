@@ -179,8 +179,8 @@
           only ships {{ podman_version_check.stdout }} natively (required:
           major version >={{ minimum_podman_major_version }}). This
           release branch is too old for this playbook - reinstall a
-          current release branch of the same distribution (see README:
-          Supported Distributions) instead of continuing to run this host.
+          current release branch of the same distribution (see README 4.1)
+          instead of continuing to run this host.
         success_msg: >-
           Native {{ podman_version_check.stdout }} meets the minimum
           requirement (major version >={{ minimum_podman_major_version }}).
@@ -411,7 +411,7 @@
     # Gated on a real reboot-required check per distro family: an
     # unconditional reboot here would fire on every re-run against an
     # already-hardened host too (this playbook's own documented purpose,
-    # see README's "Re-Run / Verifikation" section) - taking production
+    # see README 4.3, later runs for verification) - taking production
     # down on what's supposed to be a safe verification pass.
     # ------------------------------------------------------------------
     - name: Check whether a reboot is required (Debian)

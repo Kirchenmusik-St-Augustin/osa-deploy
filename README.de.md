@@ -67,8 +67,9 @@ Services übersetzt.
 - Die Anwendungs-Container nutzen `Image=…:latest` und `AutoUpdate=registry`:
   Podmans eigener `podman-auto-update.timer` zieht und startet sie täglich neu,
   ohne Ansible; das erste `./osa deploy` einer Stage schaltet diesen Timer ein
-  (das Paket liefert ihn ausgeschaltet). `./osa deploy` braucht man, um Konfiguration zu verteilen, für
-  ein sofortiges Deploy und um einen Release zu pinnen.
+  (das Paket liefert ihn ausgeschaltet). `./osa deploy` braucht man, um
+  Konfiguration zu verteilen, für ein sofortiges Deploy und um einen Release zu
+  pinnen.
 - Dozzle ist ein schreibgeschützter Log-Viewer hinter Basic Auth. Der
   wöchentliche `podman-prune.timer` führt `podman system prune -a -f` auf dem
   Host aus.
@@ -127,7 +128,7 @@ journalctl --user -u osa-backend-pod -n 100
 Der Log-Viewer liegt unter `https://einteilung.hochamt.at/logging/dozzle`
 (Basic Auth, das Login steht in `secrets/caddy.env`). Die Units heißen
 `caddy.service`, `osa-backend-pod.service`, `osa-frontend-pod.service`,
-`logging-dozzle.service` und `podman-prune.timer`.
+`logging-dozzle.service`, `podman-auto-update.timer` und `podman-prune.timer`.
 
 ### 3.2 Neu starten
 
@@ -140,6 +141,13 @@ systemctl --user restart osa-backend-pod.service    # Backend, Worker, PostgreSQ
 systemctl --user restart osa-frontend-pod.service
 systemctl --user restart caddy.service
 ```
+
+Um den Host neu zu starten (ein ausstehendes Kernel-Update zeigt sich als
+`/var/run/reboot-required`), braucht man `sudo`, das `service` nicht hat: die
+Shell mit `./osa ssh production` öffnen, mit `su - admin` wechseln (das
+sudo-Passwort von `admin`, siehe 4.3) und `sudo systemctl reboot` ausführen. Der
+Stack kommt von selbst zurück, die Seite ist etwa eine Minute nicht erreichbar;
+danach muss `systemctl --user list-units --failed` leer sein.
 
 ### 3.3 Ein Image zurückrollen
 
@@ -185,10 +193,9 @@ Alle Parameter stehen in der README von `osa-backend`.
 **Leeres Datenverzeichnis.** Startet `osa-backend-pg` gegen ein Verzeichnis
 ohne Cluster (neue Stage oder nach einem PostgreSQL-Major-Wechsel, bei dem das
 alte Verzeichnis beiseite geschoben wurde), kommt die Datenbank migriert, aber
-leer hoch. Das Image zuerst ziehen (`podman pull
-docker.io/library/postgres:<version>`, die Version steht in
-`templates/osa-backend-pg.container.j2`) und den Service in derselben Sitzung
-starten: Quadlet baut einen Pod ab, wenn er leer aussieht, und ein
+leer hoch. Das Image zuerst ziehen (`podman pull <image>`, mit der vollständigen
+Referenz aus der `Image=`-Zeile in `templates/osa-backend-pg.container.j2`, Tag
+und Digest) und den Service in derselben Sitzung starten: Quadlet baut einen Pod ab, wenn er leer aussieht, und ein
 unfertiger Pull zählt als leer. Der wöchentliche Prune entfernt Images, die
 kein Container nutzt; ein vorab gezogenes Image muss also innerhalb der Woche
 gestartet oder der Prune-Timer für die Lücke gestoppt werden. Die Rolle
@@ -266,13 +273,16 @@ cd ../../../../osa-deploy
 Das Playbook installiert die Pakete aus der Distribution, prüft die
 Podman-Version, legt `admin` (sudo) und `service` (rootless Podman) an,
 installiert die Keys aus `operator_keys.pub` für beide, stimmt rootless Podman
-ab, **startet zwischendurch neu**, sperrt die Firewall auf SSH/80/443 (SSH
+ab, **startet zwischendurch neu** (nur wenn das Upgrade es verlangt), sperrt die Firewall auf SSH/80/443 (SSH
 ratenbegrenzt) und härtet SSH am Ende (nur Key-Login, kein Root-Login, drei
 Versuche, kein X11). Es schlägt fehl, wenn eine Datei unter
 `/etc/ssh/sshd_config.d/` diese Einstellungen überschreibt. Tägliche
 automatische Sicherheitsupdates werden eingeschaltet. Vor dem ersten Lauf
 einmal von Hand verbinden (`ssh service@<host>`) und den Host-Fingerprint
-über einen unabhängigen Kanal prüfen: Die Host-Key-Prüfung ist strikt.
+über einen unabhängigen Kanal prüfen: Die Host-Key-Prüfung ist strikt. Nach
+einer Neuinstallation eines bestehenden Hosts zuerst den alten Eintrag
+entfernen (`ssh-keygen -R <host>` und `ssh-keygen -R <ip>`) und den neuen
+Fingerprint mit dem vergleichen, den der Anbieter im Panel zeigt.
 
 Ein Server, der aufgesetzt wurde, bevor es den Operator-Key gab, braucht den
 Key einmalig von Hand, weil `./osa` nur diesen Key anbietet: die Zeile aus
@@ -283,7 +293,12 @@ Der erste Lauf erzeugt das sudo-Passwort von `admin` und zeigt es zweimal an:
 gleich nach dem Setzen und noch einmal in einem Kasten am Ende des Laufs.
 Es sofort in den Passwort-Manager und in die Zugangsnotiz schreiben
 (`./osa vault <stage> edit ../../credentials.md`); es existiert sonst nirgends,
-und jeder spätere `./osa setup`-Lauf braucht es als BECOME-Passwort.
+und jeder spätere `./osa setup`-Lauf braucht es als BECOME-Passwort. Ein
+späterer Lauf setzt es nie zurück. Geht es verloren, an der Konsole des
+Anbieters als `root` anmelden (der lokale Login funktioniert weiter, nur SSH ist
+für `root` gesperrt), `passwd admin` mit ausschließlich Buchstaben und Ziffern
+ausführen (die Konsole hat oft ein anderes Tastaturlayout) und die Zugangsnotiz
+nachziehen.
 
 `./osa setup` installiert für `admin` und `service` genau die Keys aus
 `operator_keys.pub` und entfernt jeden anderen Key aus deren `authorized_keys`.
@@ -293,13 +308,22 @@ fehlt.
 
 ### 4.4 Erstes Deploy
 
+Auf einer neuen Stage das PostgreSQL-Image **vor** dem ersten Deploy ziehen
+(siehe „Leeres Datenverzeichnis“ in 3.4): Das Deploy startet den Pod, und ein
+unfertiger Pull lässt Quadlet ihn abbauen.
+
 ```bash
+./osa ssh production
+podman pull <image>           # die Image=-Zeile aus templates/osa-backend-pg.container.j2
+exit
 ./osa check production        # Trockenlauf mit Diff
 ./osa deploy production
 ```
 
-Danach das PostgreSQL-Image wie in 3.4 ziehen, wenn das Datenverzeichnis neu
-ist, die Daten einspielen (3.4) und die Prüfung aus 5.4 durchführen.
+Das erste Deploy dauert mehrere Minuten (die Images werden gezogen, PostgreSQL
+legt sein Datenverzeichnis an). Danach die Daten wiederherstellen und den
+Backend-Pod neu starten, wie in 3.4 beschrieben, und die Prüfung in 5.4
+ausführen.
 
 ### 4.5 Test- und QA-Stages
 
@@ -335,7 +359,8 @@ unverändert an `ansible-playbook`.
 ### 5.2 Deploy im Tagesbetrieb
 
 `./osa check production` und `./osa deploy production` gleichen Secrets,
-Quadlet-Definitionen, Caddyfile und die nativen Prune-Units ab und halten den
+Quadlet-Definitionen, Caddyfile und die nativen Prune-Units ab, schalten den
+nächtlichen Update- und den wöchentlichen Prune-Timer ein und halten den
 gesamten Stack am Laufen. Sie bauen kein Image, klonen kein Repository und
 spielen keine Datenbank ein. Eine geänderte Secret-Datei startet genau die
 Units neu, die sie lesen: `caddy.env` startet Caddy neu; `osa-backend.env`,
@@ -561,6 +586,8 @@ nicht gesetzt.
   am Leben halten.
 - Der geänderte Hash einer vault-verschlüsselten Umgebungsdatei startet den
   zugehörigen Pod einmal neu, auch wenn nur ein Kommentar geändert wurde.
+- Port 2020 auf dem Host nutzt die Health-Prüfung von Caddy; die Admin-API von
+  Caddy ist aus.
 - Jeder Container-Start wartet auf `podman-user-wait-network-online.service`,
   der das System-`network-online.target` abfragt, es aber nie startet. Auf
   einem Image, das das Netz mit ifupdown hochfährt, macht nichts dieses Ziel
