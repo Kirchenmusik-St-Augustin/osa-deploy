@@ -11,13 +11,15 @@ A successor receives exactly three things.
    - `osa-access` (private): inventory, vault-encrypted secrets, operator key
      and the access note `credentials.md`
 2. **Access to the private repository**: a GitHub account that is a member of
-   the organisation with the owner role, with its second factor.
+   the organisation with the owner role, with its second factor and recovery
+   codes, and the role mailbox that receives its password resets.
 3. **The vault password**, handed over separately. It is never stored in a
    repository and never written into this document.
 
 Hosting, DNS, mail, Koofr, Google and every other login are written down in
-`credentials.md` of `osa-access`, vault-encrypted. Nothing else has to be
-passed on.
+`credentials.md` of `osa-access`, vault-encrypted. What opens that note (items
+2 and 3) is not written in it. Keep the GitHub access and the vault password in
+different places. Nothing else has to be passed on.
 
 ## First steps
 

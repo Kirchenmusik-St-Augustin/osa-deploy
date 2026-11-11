@@ -11,13 +11,16 @@ Eine Nachfolgerin bzw. ein Nachfolger erhält genau drei Dinge.
    - `osa-access` (privat): Inventar, vault-verschlüsselte Secrets,
      Operator-Key und die Zugangsnotiz `credentials.md`
 2. **Zugang zum privaten Repository**: ein GitHub-Konto, das Mitglied der
-   Organisation mit der Rolle Owner ist, samt zweitem Faktor.
+   Organisation mit der Rolle Owner ist, samt zweitem Faktor und
+   Wiederherstellungscodes, und das Rollen-Postfach, das dessen
+   Passwort-Rücksetzungen empfängt.
 3. **Das Vault-Passwort**, getrennt übergeben. Es steht nie in einem
    Repository und nie in diesem Dokument.
 
 Hosting, DNS, Mail, Koofr, Google und jedes weitere Login stehen in
-`credentials.md` von `osa-access`, vault-verschlüsselt. Mehr muss nicht
-weitergegeben werden.
+`credentials.md` von `osa-access`, vault-verschlüsselt. Was diese Notiz öffnet
+(Punkte 2 und 3), steht nicht in ihr. Den GitHub-Zugang und das Vault-Passwort an
+verschiedenen Orten verwahren. Mehr muss nicht weitergegeben werden.
 
 ## Erste Schritte
 
