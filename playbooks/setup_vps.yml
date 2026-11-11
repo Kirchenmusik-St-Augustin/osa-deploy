@@ -233,6 +233,14 @@
         name: admin
         password: "{{ admin_pw | password_hash('sha512') }}"
 
+    # Shown right after it is set, not at the end of the run: the password
+    # exists nowhere else, so a failure in any later task would otherwise
+    # leave the host with a sudo password nobody knows.
+    - name: Show generated admin password (only on first creation!)
+      when: admin_check.rc != 0
+      ansible.builtin.debug:
+        msg: "IMPORTANT - save this in the password safe right now: admin / {{ admin_pw }}"
+
     # "service" logs in with its SSH key only. "*" is not a valid hash, so no
     # password can ever match; unlike a locked "!" it does not block key login.
     - name: Disable password login for "service" (key-only account, no usable password)
@@ -311,6 +319,55 @@
         content: "net.ipv4.ip_unprivileged_port_start=80\n"
         mode: "0644"
       notify: reload sysctl
+
+    # Rootless Quadlet units order themselves after
+    # podman-user-wait-network-online.service, which polls the SYSTEM
+    # network-online.target but never starts it. The target is only active when
+    # a wait-online service is enabled AND some unit requests the target. A
+    # minimal image that brings the network up with ifupdown
+    # (networking.service) has neither: ifupdown-wait-online.service is
+    # switched off and nothing wants the target, so the poll never ends and
+    # every container start waits for its 90 s timeout, after each reboot too.
+    # A host with systemd-networkd or NetworkManager has its own wait-online
+    # service and is left alone.
+    - name: Check whether the network is managed by ifupdown (Debian)
+      when: ansible_os_family == "Debian"
+      ansible.builtin.stat:
+        path: /etc/systemd/system/multi-user.target.wants/networking.service
+      register: ifupdown_networking_unit
+
+    - name: Create the multi-user.target drop-in directory (Debian with ifupdown)
+      when: ansible_os_family == "Debian" and ifupdown_networking_unit.stat.exists
+      ansible.builtin.file:
+        path: /etc/systemd/system/multi-user.target.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Let multi-user.target request network-online.target at every boot (Debian with ifupdown)
+      when: ansible_os_family == "Debian" and ifupdown_networking_unit.stat.exists
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/multi-user.target.d/osa-network-online.conf
+        content: |
+          [Unit]
+          Wants=network-online.target
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Enable ifupdown-wait-online so that network-online.target is reachable (Debian with ifupdown)
+      when: ansible_os_family == "Debian" and ifupdown_networking_unit.stat.exists
+      ansible.builtin.systemd:
+        name: ifupdown-wait-online.service
+        enabled: true
+        daemon_reload: true
+
+    - name: Reach network-online.target now instead of after the next boot (Debian with ifupdown)
+      when: ansible_os_family == "Debian" and ifupdown_networking_unit.stat.exists
+      ansible.builtin.systemd:
+        name: network-online.target
+        state: started
 
     - name: Create ~/.config/containers for "service"
       ansible.builtin.file:
@@ -474,43 +531,50 @@
     # from here)
     # ------------------------------------------------------------------
     # Key-only for every account (the keys were distributed in section 5, so
-    # this runs after them). New settings are inserted before the first
-    # "Match" block, because anything after it only applies to that block. The
-    # managed block of the admin task further down counts as a Match block:
-    # its begin marker comes first, so a line is never inserted inside it
-    # (where that task would delete it again and report a change on every
-    # run). validate refuses a configuration sshd cannot parse before the file
-    # is replaced and sshd restarted.
+    # this runs after them). The settings live in a drop-in of their own whose
+    # name sorts before every other file: OpenSSH uses the first value it
+    # reads and the main file includes /etc/ssh/sshd_config.d/*.conf at the
+    # top, so a drop-in shipped by the image (cloud-init writes
+    # "50-cloud-init.conf" with "PasswordAuthentication yes") would win over
+    # any line written into the main file. validate refuses a file sshd cannot
+    # parse before it is put in place.
+    - name: Create the sshd drop-in directory
+      ansible.builtin.file:
+        path: /etc/ssh/sshd_config.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
     - name: Harden sshd (key-only authentication, no root login)
       register: sshd_hardening
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: "{{ item.regexp }}"
-        line: "{{ item.line }}"
-        insertbefore: "^(# BEGIN ANSIBLE MANAGED BLOCK - ADMIN SSH|Match )"
-        firstmatch: true
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/00-osa-hardening.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          PermitRootLogin no
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          PubkeyAuthentication yes
+          MaxAuthTries 3
+          X11Forwarding no
         validate: /usr/sbin/sshd -t -f %s
-      loop:
-        - { regexp: "^#?PermitRootLogin", line: "PermitRootLogin no" }
-        - { regexp: "^#?PasswordAuthentication", line: "PasswordAuthentication no" }
-        - { regexp: "^#?KbdInteractiveAuthentication", line: "KbdInteractiveAuthentication no" }
-        - { regexp: "^#?MaxAuthTries", line: "MaxAuthTries 3" }
-        - { regexp: "^#?X11Forwarding", line: "X11Forwarding no" }
       notify: restart sshd
 
     - name: Apply the sshd configuration before verifying it
       ansible.builtin.meta: flush_handlers
 
-    # OpenSSH uses the first value it reads, and the main file includes
-    # /etc/ssh/sshd_config.d/*.conf at the top: a drop-in (for example from
-    # cloud-init) can override the lines above. Read what sshd really uses.
+    # Read what sshd really uses: a main file that does not include the
+    # drop-in directory would ignore the file above.
     - name: Read the effective sshd configuration
       ansible.builtin.command: /usr/sbin/sshd -T
       register: sshd_effective
       changed_when: false
       check_mode: false
 
-    # A dry run does not write the lines above, so the effective values can
+    # A dry run does not write the drop-in above, so the effective values can
     # only be checked when nothing was left to change.
     - name: Assert that no drop-in file weakens the sshd hardening
       when: not ansible_check_mode or not sshd_hardening.changed
@@ -521,7 +585,10 @@
           - "'kbdinteractiveauthentication no' in sshd_effective.stdout_lines"
           - "'maxauthtries 3' in sshd_effective.stdout_lines"
           - "'x11forwarding no' in sshd_effective.stdout_lines"
-        fail_msg: A file below /etc/ssh/sshd_config.d/ overrides the hardened sshd settings.
+        fail_msg: >-
+          The effective sshd settings are not the hardened ones: either a file
+          read before 00-osa-hardening.conf overrides them, or the main file does
+          not include /etc/ssh/sshd_config.d/*.conf.
 
     - name: Disable password login for "admin" (key-only)
       ansible.builtin.blockinfile:
@@ -540,12 +607,30 @@
       notify: restart sshd
 
     # ------------------------------------------------------------------
-    # 10. Wrap-up: password notice
+    # 10. Wrap-up: the admin password again, impossible to overlook
     # ------------------------------------------------------------------
-    - name: Show generated admin password (only on first creation!)
+    # The handlers run first, so the notice is the last thing before the recap.
+    - name: Run the pending handlers before the final notice
+      ansible.builtin.meta: flush_handlers
+
+    - name: Repeat the generated admin password at the end of the run
       when: admin_check.rc != 0
       ansible.builtin.debug:
-        msg: "IMPORTANT - save this in the password safe right now: admin / {{ admin_pw }}"
+        msg: |
+          ==============================================================
+            NEW PASSWORD OF THE USER admin (sudo) - shown only in this run
+
+                user:      admin
+                password:  {{ admin_pw }}
+
+            Write it down NOW:
+              1. in the password manager
+          {% if app_environment == 'production' %}
+              2. in the access note, which belongs to production:
+                 ./osa vault {{ osa_site_dir | basename }} edit ../../credentials.md
+          {% endif %}
+            Without it no later setup run can use sudo.
+          ==============================================================
 
   handlers:
     - name: reload sysctl

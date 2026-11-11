@@ -66,7 +66,8 @@ Services übersetzt.
   ```
 - Die Anwendungs-Container nutzen `Image=…:latest` und `AutoUpdate=registry`:
   Podmans eigener `podman-auto-update.timer` zieht und startet sie täglich neu,
-  ohne Ansible. `./osa deploy` braucht man, um Konfiguration zu verteilen, für
+  ohne Ansible; das erste `./osa deploy` einer Stage schaltet diesen Timer ein
+  (das Paket liefert ihn ausgeschaltet). `./osa deploy` braucht man, um Konfiguration zu verteilen, für
   ein sofortiges Deploy und um einen Release zu pinnen.
 - Dozzle ist ein schreibgeschützter Log-Viewer hinter Basic Auth. Der
   wöchentliche `podman-prune.timer` führt `podman system prune -a -f` auf dem
@@ -150,11 +151,14 @@ Die Skripte liegen in `osa-backend` und laufen auf dem Zielsystem:
 
 ```bash
 ./osa ssh production
-podman exec osa-backend python scripts/backup_db.py --list      # vorhandene Backups
-podman exec -it osa-backend python scripts/restore_db.py --force
+podman exec osa-backend-worker python scripts/backup_db.py --list      # vorhandene Backups
+podman exec -it osa-backend-worker python scripts/restore_db.py --force
 ```
 
-`--force` ist unter `APP_ENVIRONMENT=production` Pflicht. Das Skript nennt die
+Die Skripte im Container `osa-backend-worker` ausführen, nicht in
+`osa-backend`: Nur der Worker bekommt die Koofr-Zugangsdaten (7.1), der
+Web-Container bricht mit `KOOFR_USER is not set` ab. `--force` ist unter
+`APP_ENVIRONMENT=production` Pflicht. Das Skript nennt die
 Zieldatenbank und das Backup und verlangt die Eingabe des Datenbanknamens,
 bevor es etwas ersetzt. Danach prüfen, dass wirklich Daten da sind und nicht
 nur der Befehl sauber beendet wurde. Ein Restore leert das Schema `public` und
@@ -163,10 +167,19 @@ nicht, eine Sitzung der Bootstrap-Rolle zu beenden, also keine solche Sitzung
 auf der Anwendungsdatenbank offen halten (für Administration die Datenbank
 `postgres` nehmen).
 
+**Nach jedem Restore den Backend-Pod neu starten** (`systemctl --user restart
+osa-backend-pod.service`, siehe 3.2). Der Web-Container lief schon, als der
+Restore das Schema ersetzt hat; seine Verbindungen und sein Schema-Cache
+gehören noch zur Datenbank von vorher. Ist der Dump älter als der
+Alembic-Head des laufenden Images, führt der Neustart zugleich die offenen
+Migrationen auf den wiederhergestellten Daten aus: Nur der Web-Container
+migriert. Danach `alembic_version` und die Zeilenzahlen einiger großer Tabellen
+prüfen.
+
 Jede Nicht-Production-Stage spielt das neueste Production-Backup jede Nacht
 selbst ein (Job `downsync`, eine Stunde nach dem Production-Backup), damit
 `test` und `qa` nah an Production bleiben. Ein manuelles Backup vor einer
-riskanten Änderung: `podman exec osa-backend python scripts/backup_db.py`.
+riskanten Änderung: `podman exec osa-backend-worker python scripts/backup_db.py`.
 Alle Parameter stehen in der README von `osa-backend`.
 
 **Leeres Datenverzeichnis.** Startet `osa-backend-pg` gegen ein Verzeichnis
@@ -181,7 +194,7 @@ kein Container nutzt; ein vorab gezogenes Image muss also innerhalb der Woche
 gestartet oder der Prune-Timer für die Lücke gestoppt werden. Die Rolle
 `osa_app` liegt ebenfalls im Datenverzeichnis: Das Backend kann sich erst
 anmelden, wenn das nächste `./osa deploy` sie angelegt hat. Danach die Daten
-einspielen mit `podman exec -it osa-backend python scripts/restore_db.py`
+einspielen mit `podman exec -it osa-backend-worker python scripts/restore_db.py`
 (auf Nicht-Production-Stages ohne `--force`). Auf Production mit `--force` und
 dem Backup, das direkt vor dem Wechsel gemacht wurde.
 
@@ -265,6 +278,12 @@ Ein Server, der aufgesetzt wurde, bevor es den Operator-Key gab, braucht den
 Key einmalig von Hand, weil `./osa` nur diesen Key anbietet: die Zeile aus
 `operator_keys.pub` an `~/.ssh/authorized_keys` von `admin` und von `service`
 anhängen (über ein bestehendes Login), dann mit `./osa ssh <stage>` prüfen.
+
+Der erste Lauf erzeugt das sudo-Passwort von `admin` und zeigt es zweimal an:
+gleich nach dem Setzen und noch einmal in einem Kasten am Ende des Laufs.
+Es sofort in den Passwort-Manager und in die Zugangsnotiz schreiben
+(`./osa vault <stage> edit ../../credentials.md`); es existiert sonst nirgends,
+und jeder spätere `./osa setup`-Lauf braucht es als BECOME-Passwort.
 
 `./osa setup` installiert für `admin` und `service` genau die Keys aus
 `operator_keys.pub` und entfernt jeden anderen Key aus deren `authorized_keys`.
@@ -368,7 +387,8 @@ angewendet hat.
 
 Container gesund (`podman ps`), keine Fehler in den Logs der Pods und vier
 Klicks im Browser: anmelden, eine Besetzung speichern, eine Aufführung
-anlegen, eine Nachricht senden.
+anlegen, eine Nachricht senden. Nach einem Datenbank-Restore muss vorher der
+Backend-Pod neu gestartet worden sein (3.4).
 
 ## 6. Lokale Entwicklung
 
@@ -541,8 +561,16 @@ nicht gesetzt.
   am Leben halten.
 - Der geänderte Hash einer vault-verschlüsselten Umgebungsdatei startet den
   zugehörigen Pod einmal neu, auch wenn nur ein Kommentar geändert wurde.
-- Port 2020 auf dem Host nutzt die Health-Prüfung von Caddy; die Admin-API von
-  Caddy ist aus.
+- Jeder Container-Start wartet auf `podman-user-wait-network-online.service`,
+  der das System-`network-online.target` abfragt, es aber nie startet. Auf
+  einem Image, das das Netz mit ifupdown hochfährt, macht nichts dieses Ziel
+  aktiv: Die Wait-Unit scheitert nach ihrem 90-s-Timeout, und jeder Start
+  (auch nach einem Reboot) verzögert sich um diese Zeit. `setup_vps.yml`
+  aktiviert auf solchen Hosts `ifupdown-wait-online.service` und lässt
+  `multi-user.target` das Ziel bei jedem Boot anfordern (Drop-in unter
+  `/etc/systemd/system/multi-user.target.d/`). An einem früher aufgesetzten
+  Host zeigt sich das Problem als `podman-user-wait-network-online` in
+  `systemctl --user list-units --failed` und als langsamer Deploy.
 
 ### 7.3 Zugang und Übergabe
 

@@ -44,10 +44,10 @@ http://127.0.0.1:2020 {
 # report-only mode: violations show up in the browser console without
 # blocking anything. Switch the header name to Content-Security-Policy once
 # the policy no longer reports false positives. Allowed outside origins: the
-# Google sign-in script, button frame and styles, and the Google Fonts
-# stylesheet and font files imported by the application styles.
+# Google sign-in script, button frame and styles. The fonts are served by the
+# application itself.
 (frontend_csp) {
-	header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://*.googleusercontent.com; connect-src 'self'{% if backend_domain != frontend_domain %} https://{{ backend_domain }}{% endif %} https://accounts.google.com/gsi/; frame-src https://accounts.google.com/gsi/; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+	header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; font-src 'self'; img-src 'self' data: https://*.googleusercontent.com; connect-src 'self'{% if backend_domain != frontend_domain %} https://{{ backend_domain }}{% endif %} https://accounts.google.com/gsi/; frame-src https://accounts.google.com/gsi/; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
 }
 
 # Rejects oversized request bodies at the edge with 413, in step with the

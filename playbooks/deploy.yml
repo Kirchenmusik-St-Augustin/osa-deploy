@@ -1,10 +1,12 @@
 ---
 # Day-2 operations: keeps secrets, Quadlet definitions, the Caddyfile, and
 # timers in sync on the production host, and keeps the whole stack (Caddy +
-# Backend + Frontend + Dozzle) plus the weekly podman-prune timer running.
+# Backend + Frontend + Dozzle) plus the weekly podman-prune timer and the
+# nightly podman-auto-update timer running.
 # Builds NO images, clones NO app repos -- the images already come
-# pre-built from ghcr.io and are pulled in automatically by the already-
-# active podman-auto-update.timer.
+# pre-built from ghcr.io and are pulled in automatically by the
+# podman-auto-update.timer this playbook enables (the unit ships with the
+# podman package but is not enabled by default).
 #
 # Usage (the ./osa wrapper supplies the inventory, osa_site_dir and the vault
 # password file; run ./osa check <stage> for a dry run, ./osa deploy <stage>
@@ -47,6 +49,7 @@
 
     # The complete stack -- a single set of units.
     managed_units_safe:
+      - podman-auto-update.timer
       - podman-prune.timer
       - caddy.service
       - osa-backend-pod.service

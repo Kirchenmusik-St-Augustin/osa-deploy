@@ -57,11 +57,43 @@ def test_the_effective_sshd_check_is_skipped_only_when_a_dry_run_would_change_it
     assert assert_task["when"] == "not ansible_check_mode or not sshd_hardening.changed"
 
 
-def test_sshd_settings_are_inserted_before_the_managed_admin_block() -> None:
+def test_sshd_hardening_is_a_drop_in_that_is_read_before_any_other() -> None:
     tasks = {str(task.get("name", "")): task for task in _tasks()}
     harden = tasks["Harden sshd (key-only authentication, no root login)"]
-    arguments = cast("dict[str, object]", harden["ansible.builtin.lineinfile"])
-    assert arguments["firstmatch"] is True
-    assert arguments["insertbefore"] == (
-        "^(# BEGIN ANSIBLE MANAGED BLOCK - ADMIN SSH|Match )"
+    arguments = cast("dict[str, object]", harden["ansible.builtin.copy"])
+    destination = str(arguments["dest"])
+    assert destination.startswith("/etc/ssh/sshd_config.d/00-")
+    assert arguments["validate"] == "/usr/sbin/sshd -t -f %s"
+    settings = str(arguments["content"]).splitlines()
+    assert settings == [
+        "PermitRootLogin no",
+        "PasswordAuthentication no",
+        "KbdInteractiveAuthentication no",
+        "PubkeyAuthentication yes",
+        "MaxAuthTries 3",
+        "X11Forwarding no",
+    ]
+
+
+def test_the_admin_password_is_shown_right_after_it_is_set() -> None:
+    names = [str(task.get("name", "")) for task in _tasks()]
+    set_position = names.index('Set password for "admin" (only on first creation)')
+    show_position = names.index(
+        "Show generated admin password (only on first creation!)"
     )
+    assert show_position == set_position + 1
+
+
+def test_the_admin_password_is_repeated_at_the_end_with_the_access_note_hint() -> None:
+    tasks = _tasks()
+    last = tasks[-1]
+    assert last["name"] == "Repeat the generated admin password at the end of the run"
+    assert last["when"] == "admin_check.rc != 0"
+    message = str(cast("dict[str, object]", last["ansible.builtin.debug"])["msg"])
+    assert "{{ admin_pw }}" in message
+    assert "credentials.md" in message
+    assert "{% if app_environment == 'production' %}" in message
+    assert tasks[-2] == {
+        "name": "Run the pending handlers before the final notice",
+        "ansible.builtin.meta": "flush_handlers",
+    }

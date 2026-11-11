@@ -65,7 +65,8 @@ runs containers. Containers are described as systemd Quadlets
   ```
 - The application containers use `Image=…:latest` and `AutoUpdate=registry`:
   Podman's own `podman-auto-update.timer` pulls and restarts them daily,
-  without Ansible. `./osa deploy` is needed to distribute configuration, for
+  without Ansible; the first `./osa deploy` of a stage enables that timer (the
+  package ships it switched off). `./osa deploy` is needed to distribute configuration, for
   an immediate deploy and to pin a release.
 - Dozzle is a read-only log viewer behind basic auth. The weekly
   `podman-prune.timer` runs `podman system prune -a -f` on the host.
@@ -145,11 +146,14 @@ The scripts live in `osa-backend` and run on the target system:
 
 ```bash
 ./osa ssh production
-podman exec osa-backend python scripts/backup_db.py --list      # available backups
-podman exec -it osa-backend python scripts/restore_db.py --force
+podman exec osa-backend-worker python scripts/backup_db.py --list      # available backups
+podman exec -it osa-backend-worker python scripts/restore_db.py --force
 ```
 
-`--force` is mandatory under `APP_ENVIRONMENT=production`. The script names
+Run the scripts in `osa-backend-worker`, not in `osa-backend`: only the worker
+receives the Koofr credentials (7.1), the web container stops with
+`KOOFR_USER is not set`. `--force` is mandatory under
+`APP_ENVIRONMENT=production`. The script names
 the target database and the backup and asks for the database name before it
 replaces anything. Afterwards check that real data is there, not only that the
 command exited cleanly. A restore wipes the `public` schema and terminates
@@ -157,10 +161,18 @@ every other session of the database; PostgreSQL does not let `osa_app`
 terminate a session of the bootstrap role, so keep no such session open on the
 application database (use the `postgres` database for administration).
 
+**Restart the backend pod after every restore** (`systemctl --user restart
+osa-backend-pod.service`, see 3.2). The web container was already running when
+the restore replaced the schema, so its connections and schema cache still
+belong to the database as it was before. If the dump is older than the Alembic
+head of the running image, the restart also runs the pending migrations on
+the restored data: the web container is the only one that migrates. Then check
+`alembic_version` and the row counts of a few large tables.
+
 Every non-production stage restores the latest production backup by itself
 every night (job `downsync`, one hour after the production backup), so `test`
 and `qa` stay close to production. A manual backup before a risky change:
-`podman exec osa-backend python scripts/backup_db.py`. All parameters are in
+`podman exec osa-backend-worker python scripts/backup_db.py`. All parameters are in
 the README of `osa-backend`.
 
 **Empty data directory.** When `osa-backend-pg` starts against a directory
@@ -173,7 +185,7 @@ unfinished pull counts as empty. The weekly prune removes images that no
 container uses, so a pre-pulled image must be started within the week or the
 prune timer stopped for the gap. The role `osa_app` lives in the data
 directory too: the backend cannot log in until the next `./osa deploy` has set
-it up. Then restore data with `podman exec -it osa-backend python
+it up. Then restore data with `podman exec -it osa-backend-worker python
 scripts/restore_db.py` (no `--force` on non-production stages). On production
 use `--force` with the backup taken right before the bump.
 
@@ -254,6 +266,12 @@ A server that was set up before the operator key existed needs the key once
 by hand, because `./osa` offers only that key: append the line of
 `operator_keys.pub` to `~/.ssh/authorized_keys` of both `admin` and `service`
 (through an existing login), then check with `./osa ssh <stage>`.
+
+The first run generates the sudo password of `admin` and prints it twice: right
+after it is set and again in a box at the end of the run. Write it into the
+password manager and into the access note (`./osa vault <stage> edit
+../../credentials.md`) at once; it exists nowhere else, and every later
+`./osa setup` run needs it as the BECOME password.
 
 `./osa setup` installs exactly the keys of `operator_keys.pub` for `admin` and
 `service` and removes every other key from their `authorized_keys`. Run it
@@ -353,7 +371,8 @@ database migrations a newer release already applied.
 
 Containers healthy (`podman ps`), no errors in the logs of the pods, and four
 clicks in the browser: log in, save a cast, create a performance, send a
-message.
+message. After a database restore the backend pod must have been restarted
+first (3.4).
 
 ## 6. Local development
 
@@ -519,6 +538,16 @@ the start; only an absent key counts as unset.
   to once, also when only a comment changed.
 - Port 2020 on the host is used by the Caddy health probe; the Caddy admin API
   is off.
+- Every container start waits for `podman-user-wait-network-online.service`,
+  which polls the system `network-online.target` but never starts it. On an
+  image that brings the network up with ifupdown nothing makes that target
+  active, the wait unit fails after its 90 s timeout and each start (also
+  after a reboot) is delayed by that time. `setup_vps.yml` enables
+  `ifupdown-wait-online.service` on such hosts and lets `multi-user.target`
+  request the target at every boot (a drop-in below
+  `/etc/systemd/system/multi-user.target.d/`). On a host set up earlier the
+  symptom is `podman-user-wait-network-online` in
+  `systemctl --user list-units --failed` and a slow deploy.
 
 ### 7.3 Access and hand-over
 
