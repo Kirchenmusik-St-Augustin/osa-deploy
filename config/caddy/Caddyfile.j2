@@ -1,9 +1,27 @@
 {
-	email einteilung@hochamt.at
-	# Disables HTTP/3 (QUIC), TCP-only.
+	email {{ acme_email | mandatory }}
+	# The admin API would listen unauthenticated on the host's loopback
+	# (the container uses the host network). The container is restarted,
+	# never reloaded, so nothing needs it; the health check uses the
+	# dedicated probe site below instead.
+	admin off
 	servers {
+		# Disables HTTP/3 (QUIC), TCP-only.
 		protocols h1 h2
+		# Bounds slow-header / slow-body clients; no write timeout on purpose so
+		# long-running responses are not cut off.
+		timeouts {
+			read_header 10s
+			read_body 60s
+			idle 2m
+		}
 	}
+}
+
+# Loopback-only probe for the container health check (the admin API is off).
+http://127.0.0.1:2020 {
+	bind 127.0.0.1
+	respond /healthz "ok" 200
 }
 
 (security_headers) {
@@ -12,70 +30,128 @@
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+		# Keeps window.opener available for the Google sign-in popup while
+		# still isolating the browsing context group from other origins.
+		Cross-Origin-Opener-Policy "same-origin-allow-popups"
 		# Also strip Caddy's own identifying header -- header_down below
 		# only strips the upstream's.
 		-Server
 	}
 }
 
-{% if backend_domain == frontend_domain %}
-{{ backend_domain }} {
-	import security_headers
-	log
-	basic_auth /logging* {
-		{$LOGGING_USER} {$LOGGING_PASSWORD_HASH}
+# Content security policy of the single page application, sent in
+# report-only mode: violations show up in the browser console without
+# blocking anything. Switch the header name to Content-Security-Policy once
+# the policy no longer reports false positives. Allowed outside origins: the
+# Google sign-in script, button frame and styles. The fonts are served by the
+# application itself.
+(frontend_csp) {
+	header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; font-src 'self'; img-src 'self' data: https://*.googleusercontent.com; connect-src 'self'{% if backend_domain != frontend_domain %} https://{{ backend_domain }}{% endif %} https://accounts.google.com/gsi/; frame-src https://accounts.google.com/gsi/; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+}
+
+# Rejects oversized request bodies at the edge with 413, in step with the
+# backend's own limit (MAX_REQUEST_BODY_BYTES, 1 MiB by default). No endpoint
+# accepts uploads.
+(request_body_limit) {
+	request_body {
+		max_size 1MiB
 	}
+}
+
+# Access log of every site. The reset and verification links carry a one-time
+# token (and the address) in the query string, and the API calls the page makes
+# afterwards repeat that address in the Referer header, so both are masked
+# before a line is written; the log is readable through the log viewer.
+(access_log) {
+	log {
+		format filter {
+			wrap json
+			request>uri query {
+				replace token REDACTED
+				delete email
+			}
+			request>headers>Referer regexp "([?&](?:token|email))=[^&]*" "${1}=REDACTED"
+		}
+	}
+}
+
+# Log viewer: protected by basic auth and, when the inventory variable
+# logging_allowed_cidrs lists networks, reachable from those networks only.
+# The route block keeps the written order, so the network check answers 403
+# before the credentials are examined and a client outside the allowed
+# networks cannot tell a wrong password from a right one.
+(logging_viewer) {
 	handle /logging/dozzle* {
-		reverse_proxy 127.0.0.1:8081
+		route {
+{% if logging_allowed_cidrs | default([]) %}
+			@outside_allowlist not remote_ip {{ logging_allowed_cidrs | join(' ') }}
+			respond @outside_allowlist 403
+{% endif %}
+			basic_auth {
+				{$LOGGING_USER} {$LOGGING_PASSWORD_HASH}
+			}
+			reverse_proxy 127.0.0.1:8081
+		}
 	}
-	# Compat redirect: hochamt.at/go/{path} existed before the dedicated
-	# go.-subdomain below and redirected there too -- same pattern already
-	# proven in local development.
-	handle_path /go/* {
-		redir https://{{ shorturl_domain }}{uri} 302
-	}
-	# Backend: prefix stripped, backend runs with root_path="/api".
+}
+
+# Backend: prefix stripped, backend runs with root_path="/api".
+# API answers carry personal data (user lists, new passwords) and must
+# never be stored by a browser or proxy; header_down replaces any value
+# the backend sends itself.
+(backend_api) {
 	handle_path /api {
 		reverse_proxy 127.0.0.1:21000 {
 			header_down -Server
+			header_down Cache-Control "no-store"
 		}
 	}
 	handle_path /api/* {
 		reverse_proxy 127.0.0.1:21000 {
 			header_down -Server
+			header_down Cache-Control "no-store"
 		}
 	}
+}
+
+# The single page application: security policy plus the frontend upstream.
+(frontend_app) {
+	import frontend_csp
+	reverse_proxy 127.0.0.1:21001 {
+		header_down -Server
+	}
+}
+
+# Compat redirect: hochamt.at/go/{path} existed before the dedicated
+# go.-subdomain below and redirected there too.
+(go_redirect) {
+	handle_path /go/* {
+		redir https://{{ shorturl_domain }}{uri} 302
+	}
+}
+
+{% if backend_domain == frontend_domain %}
+{{ backend_domain }} {
+	import security_headers
+	import request_body_limit
+	import access_log
+	import logging_viewer
+	import go_redirect
+	import backend_api
 	# Frontend: catch-all fallback.
 	handle {
-		reverse_proxy 127.0.0.1:21001 {
-			header_down -Server
-		}
+		import frontend_app
 	}
 }
 {% else %}
 {{ backend_domain }} {
 	import security_headers
-	log
-	basic_auth /logging* {
-		{$LOGGING_USER} {$LOGGING_PASSWORD_HASH}
-	}
-	handle /logging/dozzle* {
-		reverse_proxy 127.0.0.1:8081
-	}
-	handle_path /go/* {
-		redir https://{{ shorturl_domain }}{uri} 302
-	}
-	# Backend: prefix stripped, backend runs with root_path="/api".
-	handle_path /api {
-		reverse_proxy 127.0.0.1:21000 {
-			header_down -Server
-		}
-	}
-	handle_path /api/* {
-		reverse_proxy 127.0.0.1:21000 {
-			header_down -Server
-		}
-	}
+	import request_body_limit
+	import access_log
+	import logging_viewer
+	import go_redirect
+	import backend_api
 	# Dedicated backend domain -- no frontend fallback here, it lives on
 	# frontend_domain below.
 	handle {
@@ -85,22 +161,21 @@
 
 {{ frontend_domain }} {
 	import security_headers
-	log
-	reverse_proxy 127.0.0.1:21001 {
-		header_down -Server
-	}
+	import access_log
+	import frontend_app
 }
 {% endif %}
 
-# Kurz-URL-Redirect-Dienst der Shorturl-Domäne, eigene Subdomain. `rewrite`
-# prependet "/go" vor jeden Request, bevor er an denselben Backend-Port wie
-# oben geht -- Gegenrichtung zum "/api"-Strip-Muster: der öffentliche
-# go-Router ist im Backend unter genau diesem Präfix eingehängt (main.py),
-# über die Haupt-Domain oben aber nicht erreichbar (dort routet nur /api/*
-# zum Backend). Öffentlich, unauthentifiziert -- reiner Redirect-Dienst.
+# Short-URL redirect service on its own subdomain. `rewrite` prepends "/go" to
+# every request before it reaches the same backend port as above -- the
+# inverse of the "/api" prefix-stripping pattern: the public go-router is
+# mounted in the backend under exactly this prefix (main.py), but is not
+# reachable via the main domain above (only /api/* is routed to the backend
+# there). Public and unauthenticated -- a pure redirect service.
 {{ shorturl_domain }} {
 	import security_headers
-	log
+	import request_body_limit
+	import access_log
 	rewrite * /go{uri}
 	reverse_proxy 127.0.0.1:21000 {
 		header_down -Server

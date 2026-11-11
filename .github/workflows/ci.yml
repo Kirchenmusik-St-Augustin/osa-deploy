@@ -1,0 +1,36 @@
+name: CI
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  check:
+    name: Lint, typecheck and test
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'requirements*.lock'
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+      - run: uv pip install --system --require-hashes -r requirements-dev.lock
+      - run: ruff check --output-format github .
+      - run: ruff format --check .
+      - run: pyright
+      - run: pytest --tb=short -q
+      - name: Refuse vault-encrypted files in this repository
+        run: "! grep -rIl --exclude-dir=.git --exclude-dir=tests '^[$]ANSIBLE_VAULT;' ."

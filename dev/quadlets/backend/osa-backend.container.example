@@ -11,11 +11,17 @@ Image=osa-backend-dev.build
 # Podman bind mount without polling.
 Environment=WATCHFILES_FORCE_POLLING=true
 Volume=%h/projects/osa-fastapi-vue/osa-backend:/app:Z
+# Git metadata stays read-only so a compromised dependency cannot plant hooks
+# that later run on the host.
+Volume=%h/projects/osa-fastapi-vue/osa-backend/.git:/app/.git:ro,Z
+NoNewPrivileges=true
+DropCapability=all
 EnvironmentFile=%h/.env/osa-backend.env
 # Deliberately not ReadOnly=true, unlike quadlets/backend's production
-# equivalent: this is a throwaway local dev container rebuilt on every
-# source change, not a security boundary worth hardening -- the
-# verification effort (see osa-backend's Dockerfile/CI) buys nothing here.
+# equivalent: the source tree is bind-mounted writable for hot reload and
+# the container is rebuilt on every source change. It still holds the
+# credentials of a database that carries a production snapshot, hence the
+# read-only .git, NoNewPrivileges and dropped capabilities above.
 
 HealthCmd=python3 -c 'import urllib.request; urllib.request.urlopen("http://localhost:8000/")'
 HealthInterval=30s

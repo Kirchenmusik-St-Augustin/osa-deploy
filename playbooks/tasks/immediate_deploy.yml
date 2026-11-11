@@ -1,0 +1,47 @@
+---
+# Pulls deploy_image and restarts deploy_pod_unit, but only when the running
+# container does not use the freshly pulled image yet (or when
+# force_restart=true). Included by playbooks/deploy.yml with deploy_image,
+# deploy_container and deploy_pod_unit set.
+
+- name: "Immediate deploy {{ deploy_image }}: pull the image"
+  ansible.builtin.command: podman pull --quiet {{ deploy_image }}
+  environment:
+    XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+  changed_when: false
+
+# Under --check the pull above is skipped, so the image may not exist
+# locally yet on a fresh host; the real run still fails on a missing image.
+- name: "Immediate deploy {{ deploy_image }}: read the pulled image ID"
+  ansible.builtin.command: podman image inspect {{ deploy_image }} --format '{{ "{{" }}.Id{{ "}}" }}'
+  environment:
+    XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+  register: pulled_image_id
+  changed_when: false
+  check_mode: false
+  failed_when: pulled_image_id.rc != 0 and not ansible_check_mode
+
+# A missing container (first start, or a start that failed earlier) yields an
+# empty ID and therefore a restart.
+- name: "Immediate deploy {{ deploy_image }}: read the image ID of the running container"
+  ansible.builtin.command: podman container inspect {{ deploy_container }} --format '{{ "{{" }}.Image{{ "}}" }}'
+  environment:
+    XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+  register: running_image_id
+  changed_when: false
+  check_mode: false
+  failed_when: false
+
+- name: "Immediate deploy {{ deploy_image }}: restart {{ deploy_pod_unit }}"
+  # Do NOT restart the container unit directly: the container is bound to
+  # the pod service via a generated BindsTo=, so a container restart stops
+  # the whole pod, but nothing brings it back up afterward on its own
+  # (verified empirically). The pod service itself pulls the contained
+  # container back up via its Wants=/Before=.
+  when: (running_image_id.stdout | trim) != (pulled_image_id.stdout | trim) or (force_restart | default(false) | bool)
+  ansible.builtin.systemd:
+    scope: user
+    name: "{{ deploy_pod_unit }}"
+    state: restarted
+  environment:
+    XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"

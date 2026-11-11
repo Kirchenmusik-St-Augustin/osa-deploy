@@ -1,0 +1,65 @@
+[Unit]
+Description=OSA Frontend ({{ app_environment }})
+
+[Container]
+ContainerName=osa-frontend
+Pod=osa-frontend.pod
+{# "latest" follows the nightly auto-update. Setting osa_frontend_image_tag
+   (inventory or -e) to a full commit SHA pins this container to one release. #}
+Image=ghcr.io/kirchenmusik-st-augustin/osa-frontend:{{ osa_frontend_image_tag | default('latest') }}
+# The unit counts as started only once the health check passes, so
+# `podman auto-update` can see a broken new image and roll back to the
+# previous one instead of leaving it in place.
+Notify=healthy
+AutoUpdate=registry
+# Must set API_BASE_URL and APP_ENVIRONMENT (GOOGLE_CLIENT_ID optional) --
+# the image's docker-entrypoint.d/40-generate-runtime-config.sh refuses to
+# start nginx otherwise (see osa-frontend/docker/docker-entrypoint.d/).
+EnvironmentFile=%h/.env/osa-frontend.env
+
+# Runs the whole container as nginx's own unprivileged user from the
+# start instead of the image's default (root, then nginx internally
+# chowns/setuids down to this same uid for its worker processes) --
+# verified live: nginx detects it's already non-root and skips that
+# internal privilege-drop entirely, so DropCapability=all needs no
+# CAP_CHOWN/CAP_SETUID/CAP_SETGID added back, only the one capability an
+# unprivileged process needs to bind a port below 1024.
+User=101:101
+ReadOnly=true
+NoNewPrivileges=true
+DropCapability=all
+AddCapability=CAP_NET_BIND_SERVICE
+# The VPS this runs on has 1.9GB total RAM across all 7 application
+# containers -- an unbounded container could starve every neighbor on an
+# OOM event. 48m is ~22x the observed idle RSS (roughly 2.2MB); this
+# container only serves the pre-built static SPA bundle via nginx, so
+# there is no request-driven growth to budget for. Quadlet 5.4.2's
+# [Container] section has no native memory-limit key, so PodmanArgs= is
+# the only way to reach --memory. 32 PIDs covers nginx's master plus a
+# small worker-process pool.
+PodmanArgs=--memory=48m
+PidsLimit=32
+# /run: nginx's own pid file (/run/nginx.pid) plus
+# docker-entrypoint.d/40-generate-runtime-config.sh's generated config.js
+# (see nginx.conf). /var/cache/nginx: nginx creates its
+# client/proxy/fastcgi/uwsgi/scgi temp dirs here unconditionally at
+# startup, regardless of whether they're ever actually used by this
+# static-only site -- verified live: nginx refuses to start without it.
+# Both default to a restrictive mode when Podman auto-tmpfs's them for a
+# root-owned process, hence the explicit tmpfs-mode=1777 override needed
+# now that the container runs as non-root throughout. noexec: neither
+# location needs to be executable, and with a read-only root they are the
+# only places a compromised nginx process could write a payload.
+Mount=type=tmpfs,target=/run,tmpfs-mode=1777,noexec
+Mount=type=tmpfs,target=/var/cache/nginx,tmpfs-mode=1777,noexec
+
+HealthCmd=wget -qO- http://127.0.0.1/ || exit 1
+HealthInterval=30s
+HealthTimeout=5s
+HealthRetries=3
+HealthStartPeriod=10s
+
+[Service]
+Restart=always
+RestartSec=5
+TimeoutStartSec=60
