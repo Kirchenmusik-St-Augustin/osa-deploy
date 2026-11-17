@@ -9,7 +9,7 @@ Pod=osa-backend.pod
 # 18.x point release upstream pushes next, and AutoUpdate=registry would
 # then pull+restart the primary production database on that schedule,
 # unreviewed. Bumping Postgres is now a deliberate, manual edit here.
-Image=docker.io/library/postgres:18.6@sha256:1957b2ff3137e4ef7f3bc813e74fff50b1e1ffddc85c8b9d6f14ade972be8687
+Image=docker.io/library/postgres:18.7@sha256:c7fedce47eff6a78cb35dad6b627f0d684107f75ab15c0870e40c093766ba452
 
 EnvironmentFile=%h/.env/osa-backend-pg.env
 # Runs directly as postgres' own uid (999) instead of the image's default
