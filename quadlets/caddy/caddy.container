@@ -8,7 +8,7 @@ After=network-online.target
 # the whole system; AutoUpdate=registry against a floating tag meant an
 # untested third-party release could take the entire site down overnight.
 # Bumping Caddy is now a deliberate, manual edit here.
-Image=docker.io/library/caddy:2.11.7@sha256:8dc9fa87b36b25303d1c67d2a09f5824b7f3bfd72cb052f246e5da2133fe29a8
+Image=docker.io/library/caddy:2.11.9@sha256:fc9cbc100585871d18d4e451cca7021785c90a7006087427ae5ceb3e4efe6424
 ContainerName=caddy
 # Podman's own docs call host network mode "considered insecure" (full
 # access to local system services, not just the target ports) -- accepted

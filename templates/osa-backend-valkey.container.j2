@@ -8,7 +8,7 @@ Pod=osa-backend.pod
 # "8-alpine" tag -- same reasoning as osa-backend-pg.container.j2: avoids
 # an unreviewed, unattended AutoUpdate=registry pull+restart of the job
 # queue's backing store. Bumping Valkey is now a deliberate, manual edit.
-Image=docker.io/valkey/valkey:8.1.10-alpine@sha256:d2e18f3410b6f616de1417f570fa55261af2898b9c5b2cfb6781ce2373ea43d1
+Image=docker.io/valkey/valkey:8.1.11-alpine@sha256:ac81eb0a7b37e054000af8fdd5e6c3eb17249caa71eba79c003a145e518415e5
 
 EnvironmentFile=%h/.env/osa-backend-valkey.env
 ReadOnly=true
