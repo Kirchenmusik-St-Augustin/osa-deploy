@@ -1,0 +1,11 @@
+[Unit]
+Description=Mirror the static website of the Augustinian church every five minutes
+
+[Timer]
+# Fetching without new commits costs a few kilobytes. deploy.yml enables this
+# timer only on a stage whose inventory sets augustiner_domain.
+OnCalendar=*:0/5
+Persistent=false
+
+[Install]
+WantedBy=timers.target

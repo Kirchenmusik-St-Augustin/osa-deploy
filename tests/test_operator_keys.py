@@ -92,6 +92,7 @@ def test_the_admin_password_is_repeated_at_the_end_with_the_access_note_hint() -
     message = str(cast("dict[str, object]", last["ansible.builtin.debug"])["msg"])
     assert "{{ admin_pw }}" in message
     assert "credentials.md" in message
+    assert "./osa credentials edit" in message
     assert "{% if app_environment == 'production' %}" in message
     assert tasks[-2] == {
         "name": "Run the pending handlers before the final notice",

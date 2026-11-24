@@ -62,6 +62,26 @@ def test_vault_command_is_dispatched(
     assert seen == [("view", ["a", "b"])]
 
 
+def test_credentials_command_needs_no_stage(
+    site: Site, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[tuple[Path, str]] = []
+
+    def fake(sites_dir: Path, action: str, _reader: object) -> int:
+        seen.append((sites_dir, action))
+        return 0
+
+    monkeypatch.setattr(commands, "run_credentials", fake)
+    sites = site.directory.parent
+    assert cli.main(["--sites-dir", str(sites), "credentials", "view"]) == 0
+    assert seen == [(sites, "view")]
+
+
+def test_unknown_credentials_action_is_rejected_by_the_parser() -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["credentials", "shred"])
+
+
 def test_init_command_reports_the_created_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

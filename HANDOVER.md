@@ -30,8 +30,8 @@ On the workstation you need `git`, `ssh`, `ansible` (full package) and Python
 git clone https://github.com/Kirchenmusik-St-Augustin/osa-deploy.git
 git clone https://github.com/Kirchenmusik-St-Augustin/osa-access.git
 cd osa-deploy
-./osa vault production view ../../credentials.md   # read the access note
-./osa ssh production                               # shell on the live server
+./osa credentials view      # read the access note
+./osa ssh production        # shell on the live server
 ```
 
 Both commands ask for the vault password. Further reading:

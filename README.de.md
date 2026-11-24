@@ -36,7 +36,10 @@ Die CI beider Anwendungs-Repositories baut bei jedem Merge nach `main` ein
 Image und pusht es nach `ghcr.io/kirchenmusik-st-augustin/<repo>` als `latest`
 und als vollständigen Commit-SHA. Dieses Repository baut kein Image und
 klont kein Anwendungs-Repository auf den Host; es verteilt Konfiguration und
-Secrets und stellt sicher, dass die richtigen Images laufen.
+Secrets und stellt sicher, dass die richtigen Images laufen. Die einzige
+Ausnahme ist die optionale statische Website der Augustinerkirche: Wo das
+Inventar sie einschaltet, spiegelt ein kleiner Container dieses öffentliche
+Fremd-Repository auf den Host (Abschnitt 2.4).
 
 ### 2.2 Laufzeit-Aufbau
 
@@ -63,6 +66,7 @@ Services übersetzt.
           ├─ /api, /api/*      → 127.0.0.1:21000 → osa-backend-pod (Präfix entfernt)
           └─ alles andere      → 127.0.0.1:21001 → osa-frontend-pod
      └─ go.hochamt.at (Kurz-URLs) → 127.0.0.1:21000 (mit Präfix /go)
+     └─ www.augustiner.at.schimpl.cc → Dateien aus ~/data/augustiner/site (nur lesend)
   ```
 - Die Anwendungs-Container nutzen `Image=…:latest` und `AutoUpdate=registry`:
   Podmans eigener `podman-auto-update.timer` zieht und startet sie täglich neu,
@@ -73,6 +77,14 @@ Services übersetzt.
 - Dozzle ist ein schreibgeschützter Log-Viewer hinter Basic Auth. Der
   wöchentliche `podman-prune.timer` führt `podman system prune -a -f` auf dem
   Host aus.
+- Optional: die statische Website der Augustinerkirche, ein öffentliches
+  Fremd-Repository. `augustiner-pull.timer` startet alle fünf Minuten den
+  kurzlebigen Container `augustiner-pull`; er spiegelt den Branch `main` nach
+  `~/data/augustiner/site` (`git fetch` und `reset --hard`, damit auch ein
+  Force-Push im Original übernommen wird). Caddy liefert dieses Verzeichnis
+  nur lesend aus, und nur die Dateien, die das eigene Live-Paket des
+  Repositorys enthält. Ein Commit mit symbolischem Link wird abgewiesen, und
+  unter 2 GB freiem Plattenplatz startet kein Lauf.
 
 ### 2.3 Container-Härtung
 
@@ -111,6 +123,15 @@ Production, oder nicht) und werden beim Deploy in die Caddyfile und in die
 keine Stage: Die lokale Entwicklung läuft auf dem Rechner der Entwicklerin
 bzw. des Entwicklers (Kapitel 6).
 
+Optional, für die statische Website: `augustiner_domain` (ihre Hauptdomain),
+`augustiner_alias_domains` (eine JSON-Liste weiterer Namen, die alle dauerhaft
+auf die Hauptdomain umleiten) und `augustiner_noindex` (Standard `true`,
+sendet `X-Robots-Tag: noindex`, solange eine Übergangs-Domain läuft). Einen
+Alias erst eintragen, wenn sein DNS-Eintrag auf den Host zeigt: Sonst bekommt
+Caddy kein Zertifikat dafür und versucht es immer wieder, was das Log füllt.
+`augustiner_domain` entfernen und deployen nimmt die Website und ihren Timer
+wieder weg.
+
 Heute wird nur `production` ausgerollt. `test` und `qa` entstehen auf dem
 gleichen Weg, sobald ein Server dafür existiert (Abschnitt 4.5).
 
@@ -128,7 +149,12 @@ journalctl --user -u osa-backend-pod -n 100
 Der Log-Viewer liegt unter `https://einteilung.hochamt.at/logging/dozzle`
 (Basic Auth, das Login steht in `secrets/caddy.env`). Die Units heißen
 `caddy.service`, `osa-backend-pod.service`, `osa-frontend-pod.service`,
-`logging-dozzle.service`, `podman-auto-update.timer` und `podman-prune.timer`.
+`logging-dozzle.service`, `podman-auto-update.timer` und `podman-prune.timer`,
+dazu `augustiner-pull.timer`, wo die statische Website eingeschaltet ist.
+Dessen letzte Läufe (`cloned`, `updated`, `unchanged` oder der Grund einer
+Ablehnung) zeigt `journalctl --user -u augustiner-pull -n 20`;
+`systemctl --user start augustiner-pull.service` holt neue Commits sofort,
+statt auf den Timer zu warten.
 
 ### 3.2 Neu starten
 
@@ -292,7 +318,7 @@ anhängen (über ein bestehendes Login), dann mit `./osa ssh <stage>` prüfen.
 Der erste Lauf erzeugt das sudo-Passwort von `admin` und zeigt es zweimal an:
 gleich nach dem Setzen und noch einmal in einem Kasten am Ende des Laufs.
 Es sofort in den Passwort-Manager und in die Zugangsnotiz schreiben
-(`./osa vault <stage> edit ../../credentials.md`); es existiert sonst nirgends,
+(`./osa credentials edit`); es existiert sonst nirgends,
 und jeder spätere `./osa setup`-Lauf braucht es als BECOME-Passwort. Ein
 späterer Lauf setzt es nie zurück. Geht es verloren, an der Konsole des
 Anbieters als `root` anmelden (der lokale Login funktioniert weiter, nur SSH ist
@@ -349,6 +375,7 @@ und lassen `SMTP_*` in `osa-backend.env.j2` auskommentiert.
 | `./osa ssh <stage> [ssh-Optionen]` | Shell als `service` mit dem Operator-Key |
 | `./osa vault <stage> encrypt\|decrypt\|edit\|view DATEI…` | Dateien relativ zum Stage-Verzeichnis bearbeiten |
 | `./osa vault <stage> rekey` | alle Vault-Dateien der Stage unter neuem Passwort neu verschlüsseln |
+| `./osa credentials view\|edit\|rekey` | die Zugangsnotiz `credentials.md` von `osa-access` lesen, ändern oder neu verschlüsseln |
 
 `--sites-dir VERZEICHNIS` (vor dem Befehl) zeigt auf ein anderes
 Site-Verzeichnis. Der Befehl fragt das Vault-Passwort ab, legt Passwortdatei
@@ -605,5 +632,5 @@ nicht gesetzt.
 
 Alles, was ein Nachfolger braucht, steht im [HANDOVER.de.md](HANDOVER.de.md).
 Das Vault-Passwort steht in keinem Repository; zum Ändern `./osa vault <stage>
-rekey` für jede Stage ausführen und `credentials.md` aus `osa-access` von Hand
-mit `ansible-vault rekey` neu verschlüsseln.
+rekey` für jede Stage ausführen und `./osa credentials rekey` einmal für die
+Zugangsnotiz.

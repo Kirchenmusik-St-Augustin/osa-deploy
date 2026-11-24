@@ -31,8 +31,8 @@ Python 3.12 oder neuer. Beide Repositories nebeneinander klonen:
 git clone https://github.com/Kirchenmusik-St-Augustin/osa-deploy.git
 git clone https://github.com/Kirchenmusik-St-Augustin/osa-access.git
 cd osa-deploy
-./osa vault production view ../../credentials.md   # Zugangsnotiz lesen
-./osa ssh production                               # Shell auf dem Live-Server
+./osa credentials view      # Zugangsnotiz lesen
+./osa ssh production        # Shell auf dem Live-Server
 ```
 
 Beide Befehle fragen nach dem Vault-Passwort. Weiterlesen: [README](README.de.md),
