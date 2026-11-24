@@ -338,7 +338,9 @@ stages use the **read-only** Koofr account in `osa-backend-worker.env`
 command asks for the vault password, unpacks the password file and the
 operator key into a private directory in `/dev/shm` for the duration of the
 run and removes both afterwards. Everything after the stage name goes to
-`ansible-playbook` unchanged.
+`ansible-playbook` (to `ssh` for `ssh`) unchanged, except `-h`/`--help`:
+`./osa <command> --help` shows the options, tags and examples of the command
+without asking for the vault password.
 
 ### 5.2 Day-2 deploy
 

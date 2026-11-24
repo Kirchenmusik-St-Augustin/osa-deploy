@@ -1,8 +1,10 @@
+import re
 from pathlib import Path
 
 import pytest
 
 from osa_tools import cli, commands
+from osa_tools.playbooks import REPOSITORY_ROOT
 from osa_tools.site import Site
 from tests.conftest import make_reader
 
@@ -104,6 +106,62 @@ def test_errors_are_printed_without_a_traceback(
 def test_unknown_vault_action_is_rejected_by_the_parser() -> None:
     with pytest.raises(SystemExit):
         cli.main(["vault", "test", "shred", "x"])
+
+
+@pytest.mark.parametrize(
+    ("argv", "usage"),
+    [
+        (
+            ["deploy", "test", "--help"],
+            "usage: osa deploy [-h] stage [ANSIBLE_OPTION ...]",
+        ),
+        (["check", "test", "--tags", "deploy-backend", "-h"], "usage: osa check"),
+        (["setup", "test", "-u", "root", "--help"], "usage: osa setup"),
+        (["ssh", "test", "-h"], "usage: osa ssh [-h] stage [SSH_OPTION ...]"),
+    ],
+)
+def test_help_after_the_stage_shows_the_command_help_without_running_it(
+    site: Site,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    usage: str,
+) -> None:
+    def must_not_run(*_args: object, **_kwargs: object) -> int:
+        pytest.fail("the command ran instead of showing its help")
+
+    def must_not_ask(_prompt: str) -> str:
+        pytest.fail("the vault password was asked for")
+
+    monkeypatch.setattr(commands, "run_playbook", must_not_run)
+    monkeypatch.setattr(commands, "open_ssh", must_not_run)
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["--sites-dir", str(site.directory.parent), *argv], must_not_ask)
+    assert exit_info.value.code == 0
+    assert capsys.readouterr().out.startswith(usage)
+
+
+def test_deploy_help_names_the_pass_through_options_and_every_tag(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["deploy", "--help"])
+    out = capsys.readouterr().out
+    assert "ANSIBLE_OPTION" in out
+    for tag in cli.DEPLOY_TAGS:
+        assert f"  {tag}  " in out
+
+
+def test_documented_deploy_tags_match_the_opt_in_tags_of_the_playbook() -> None:
+    playbook = (REPOSITORY_ROOT / "playbooks" / "deploy.yml").read_text(
+        encoding="utf-8"
+    )
+    tags = {
+        tag.strip()
+        for match in re.findall(r"tags: \[([^\]]*)\]", playbook)
+        for tag in match.split(",")
+    }
+    assert tags - {"always", "never"} == set(cli.DEPLOY_TAGS)
 
 
 def test_default_sites_directory_is_next_to_the_repository() -> None:
