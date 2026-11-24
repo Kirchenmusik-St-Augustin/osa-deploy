@@ -43,8 +43,9 @@ AddCapability=CAP_NET_BIND_SERVICE
 # The VPS this runs on has 1.9GB total RAM across all 7 application
 # containers -- an unbounded container could starve every neighbor on an
 # OOM event. 96m is ~8x the observed idle RSS (roughly 12MB); this Caddy
-# instance terminates TLS for the stage's own domains only, not a shared
-# multi-domain deployment, so traffic stays modest. Quadlet 5.4.2's
+# instance terminates TLS for the stage's own domains and, where the
+# inventory enables it, one static website streamed from disk (~18MB RSS
+# while serving a 75MB video in a test), so traffic stays modest. Quadlet 5.4.2's
 # [Container] section has no native memory-limit key, so PodmanArgs= is
 # the only way to reach --memory. 64 PIDs covers Caddy's admin/worker
 # goroutine-backed processes with headroom.
@@ -58,6 +59,11 @@ Mount=type=tmpfs,target=/run,tmpfs-mode=1777,noexec
 
 # --- VOLUMES ---
 Volume=%h/.config/containers/systemd/osa/infrastructure/caddy/Caddyfile:/etc/caddy/Caddyfile:ro,z
+# Static website of the Augustinian church, mirrored by augustiner-pull
+# (quadlets/augustiner/). Read-only: Caddy only serves it. Mounted on every
+# stage (an empty directory where the inventory does not enable the site),
+# so this file stays the same on every stage.
+Volume=%h/data/augustiner:/srv/augustiner:ro,z
 
 # Everything else lives in the named volumes.
 Volume=caddy-data.volume:/data

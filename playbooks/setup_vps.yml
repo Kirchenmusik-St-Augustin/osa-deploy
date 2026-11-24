@@ -626,8 +626,8 @@
             Write it down NOW:
               1. in the password manager
           {% if app_environment == 'production' %}
-              2. in the access note, which belongs to production:
-                 ./osa vault {{ osa_site_dir | basename }} edit ../../credentials.md
+              2. in the access note credentials.md, which belongs to production:
+                 ./osa credentials edit
           {% endif %}
             Without it no later setup run can use sudo.
           ==============================================================

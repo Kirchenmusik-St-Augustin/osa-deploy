@@ -99,8 +99,30 @@ actions:
 
 examples:
   ./osa vault production view secrets/osa-backend.env.j2
-  ./osa vault production edit ../../credentials.md
+  ./osa vault production edit secrets/caddy.env
   ./osa vault production rekey
+
+The access note credentials.md has its own command: ./osa credentials --help
+"""
+
+_CREDENTIALS_DESCRIPTION = """\
+Work on the access note credentials.md in the root of the site repository
+(next to the sites directory). It is encrypted with the same vault password
+as the stages.
+"""
+_CREDENTIALS_EPILOG = """\
+actions:
+  view    print the note decrypted, long lines in full (no pager)
+  edit    open the note decrypted in $EDITOR, save encrypted
+  rekey   re-encrypt the note under a new vault password; the stages are
+          rekeyed on their own with "./osa vault <stage> rekey"
+
+examples:
+  ./osa credentials view
+  EDITOR=nano ./osa credentials edit
+  ./osa credentials rekey
+
+The longer form "./osa vault production edit ../../credentials.md" works too.
 """
 
 _INIT_DESCRIPTION = """\
@@ -160,6 +182,12 @@ def build_parser() -> argparse.ArgumentParser:
         _add_pass_through(parsers[name], _ANSIBLE_METAVAR, _ANSIBLE_HELP)
     _add_pass_through(parsers["ssh"], _SSH_METAVAR, _SSH_HELP)
     _add_vault_arguments(parsers["vault"])
+    parsers["credentials"].add_argument(
+        "action",
+        choices=commands.CREDENTIALS_ACTIONS,
+        metavar="ACTION",
+        help=f"one of {', '.join(commands.CREDENTIALS_ACTIONS)}, see actions below",
+    )
     _add_init_arguments(parsers["init"])
     return parser
 
@@ -208,6 +236,11 @@ def _command_help() -> dict[str, _CommandHelp]:
         ),
         "vault": _CommandHelp(
             "work on vault-encrypted files", _VAULT_DESCRIPTION, _VAULT_EPILOG
+        ),
+        "credentials": _CommandHelp(
+            "view, edit or rekey the access note credentials.md",
+            _CREDENTIALS_DESCRIPTION,
+            _CREDENTIALS_EPILOG,
         ),
         "init": _CommandHelp(
             "create a new stage from the template", _INIT_DESCRIPTION, _INIT_EPILOG
@@ -274,8 +307,10 @@ def _asks_for_help(args: argparse.Namespace) -> bool:
 
 def _dispatch(args: argparse.Namespace, read_password: PasswordReader) -> int:
     sites_dir = Path(str(args.sites_dir))
-    stage = str(args.stage)
     command = str(args.command)
+    if command == "credentials":
+        return commands.run_credentials(sites_dir, str(args.action), read_password)
+    stage = str(args.stage)
     if command == "init":
         environment = None if args.environment is None else str(args.environment)
         created = commands.init_site(sites_dir, stage, environment, read_password)

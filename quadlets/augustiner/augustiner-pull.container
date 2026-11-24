@@ -1,0 +1,46 @@
+[Unit]
+Description=Mirror the static website of the Augustinian church from GitHub
+Wants=network-online.target
+After=network-online.target
+
+# Short-lived: started by augustiner-pull.timer (systemd-timers/), runs
+# pull.sh once and exits. No [Install] section, so nothing starts it at boot
+# on its own; deploy.yml enables the timer only on a stage whose inventory
+# sets augustiner_domain.
+[Container]
+ContainerName=augustiner-pull
+# Pinned to a specific, verified digest like every other infrastructure
+# image; no AutoUpdate=. Bumping git is a deliberate, manual edit here.
+Image=docker.io/alpine/git:v2.54.1@sha256:d2f64ba8dff777a6b8fcc313c3efa06e7a06dfe8a161c7032f93af1de3dc3124
+Entrypoint=/bin/sh
+Exec=/opt/augustiner/pull.sh
+
+Environment=AUG_REPO_URL=https://github.com/felosaurier/augustinerkirche-wien.git
+Environment=AUG_BRANCH=main
+Environment=AUG_TARGET=/work/site
+# Leaves room for the database on the same disk: the run is refused below
+# this much free space.
+Environment=AUG_MIN_FREE_MB=2048
+Environment=HOME=/tmp
+
+# The only writer of the copy. Caddy mounts the same directory read-only.
+Volume=%h/data/augustiner:/work:rw,z
+Volume=%h/.config/containers/systemd/augustiner/pull.sh:/opt/augustiner/pull.sh:ro,z
+
+ReadOnly=true
+NoNewPrivileges=true
+DropCapability=all
+Mount=type=tmpfs,target=/tmp,tmpfs-mode=1777,noexec
+
+# The first clone (about 400 MB of history plus 400 MB of files) took 21s and
+# peaked at roughly 25MB in sampled measurements on the development host;
+# 256m is ten times that and still small on a host with 1.9GB RAM shared by
+# all stacks. Quadlet 5.4.2 has no native memory key.
+PodmanArgs=--memory=256m
+PidsLimit=64
+
+[Service]
+Type=oneshot
+# The first clone took 21s on the development host; the limit leaves room for
+# a slow link. Later runs only fetch new commits.
+TimeoutStartSec=15min

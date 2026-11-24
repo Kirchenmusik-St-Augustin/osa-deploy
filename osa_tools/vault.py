@@ -69,6 +69,25 @@ def run_manual(
     )
 
 
+def print_decrypted(source: Path, password_file: Path) -> int:
+    """Print the decrypted content of `source` in full, without a pager.
+
+    `ansible-vault view` hands the text to a pager that cuts long lines at
+    the width of the terminal; decrypting to stdout leaves `source` as it is.
+    """
+    return run(
+        [
+            "ansible-vault",
+            "decrypt",
+            "--vault-password-file",
+            str(password_file),
+            "--output",
+            "-",
+            str(source),
+        ]
+    )
+
+
 def vaulted_files(directory: Path) -> list[Path]:
     """Return every vault-encrypted file below `directory`, sorted."""
     return sorted(

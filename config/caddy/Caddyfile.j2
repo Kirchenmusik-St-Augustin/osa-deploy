@@ -181,3 +181,87 @@ http://127.0.0.1:2020 {
 		header_down -Server
 	}
 }
+{% if augustiner_domain is defined %}
+
+# Static website of the Augustinian church: a third-party repository that
+# augustiner-pull.timer mirrors into ~/data/augustiner/site, mounted read-only.
+# It brings its own content security policy as a <meta> tag in every page, so
+# none of the application snippets above apply here.
+(augustiner_headers) {
+	header {
+		# Without includeSubDomains: the stage only answers for this one name.
+		Strict-Transport-Security "max-age=31536000"
+		Content-Security-Policy "frame-ancestors 'none'"
+		X-Frame-Options "DENY"
+		Cross-Origin-Opener-Policy "same-origin"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+		-Server
+	}
+}
+
+{{ augustiner_domain }} {
+	import augustiner_headers
+	import access_log
+{% if augustiner_noindex | default(true) | bool %}
+	# Interim domain: keeps search engines from indexing a copy of the site.
+	header X-Robots-Tag "noindex, nofollow, noarchive"
+{% endif %}
+	root * /srv/augustiner/site
+	encode zstd gzip
+
+	# Every response is revalidated by ETag (304 when unchanged), so a
+	# replaced file shows up at once. Media may sit in shared caches, the
+	# data tables only in the browser.
+	@media path_regexp (?i)\.(?:webp|png|jpe?g|gif|svg|ico|mp3|m4a|ogg|mp4|webm)$
+	@data {
+		path /data/*
+		not path_regexp (?i)\.(?:webp|png|jpe?g|gif|svg|ico|mp3|m4a|ogg|mp4|webm)$
+	}
+	header @media Cache-Control "public, no-cache"
+	header @data Cache-Control "private, no-cache"
+	header ?Cache-Control "no-cache"
+
+	@csv path *.csv
+	header @csv Content-Type "text/csv; charset=utf-8"
+	@manifest path /site.webmanifest
+	header @manifest Content-Type "application/manifest+json"
+
+	route {
+		@not_read not method GET HEAD
+		respond @not_read 405
+
+		# Earlier addresses of the translated pages.
+		@old_index path_regexp old_index ^/index\.(en|it|fr|es)\.html$
+		redir @old_index /{re.old_index.1}/index.html permanent
+		@old_page path_regexp old_page ^/pages/([a-z-]+)\.(en|it|fr|es)\.html$
+		redir @old_page /{re.old_page.2}/pages/{re.old_page.1}.html permanent
+
+		# Allowlist: only what the repository's own live package
+		# (tools/paket.py) contains. Tooling, notes, the .git directory and
+		# the browser-side administration stay unreachable, including
+		# anything added to the repository later.
+		@outside_package not path / /index.html /favicon.ico /site.webmanifest /sw.js /offline.html /sitemap.xml /robots.txt /en /it /fr /es /pages/* /en/* /it/* /fr/* /es/* /css/* /js/* /assets/* /data/*
+		respond @outside_package 404
+		@admin_only path_regexp (?i)^/(?:css/admin|js/admin|pages/[^/]*-verwaltung\.html$)
+		respond @admin_only 404
+		@hidden path_regexp (?i)/(?:\.|~\$|thumbs\.db$|desktop\.ini$)
+		respond @hidden 404
+		@leftovers path_regexp (?i)(?:~|\.(?:bak|tmp|crswap|swp|log|md|py|sh|conf|sha256|tar|gz|zip))$
+		respond @leftovers 404
+
+		file_server
+	}
+}
+{% if augustiner_alias_domains | default([]) %}
+
+# Further names of the same website: permanent redirect to the main domain,
+# path and query kept.
+{{ augustiner_alias_domains | join(', ') }} {
+	import access_log
+	header -Server
+	redir https://{{ augustiner_domain }}{uri} permanent
+}
+{% endif %}
+{% endif %}

@@ -117,6 +117,81 @@ def test_rekey_refuses_a_short_new_password(real_site: Site) -> None:
         commands.run_vault(real_site, "rekey", [], make_reader(PASSWORD, "short"))
 
 
+_NOTE_TEXT = "# Access note\n" + "a line longer than any terminal " * 8 + "\n"
+
+
+@pytest.fixture
+def note(real_site: Site) -> Path:
+    """An encrypted credentials.md in the root of the site repository."""
+    password_file = real_site.directory / "pw"
+    password_file.write_text(PASSWORD + "\n", encoding="utf-8")
+    plain = real_site.directory / "plain.md"
+    plain.write_text(_NOTE_TEXT, encoding="utf-8")
+    target = real_site.directory.parent.parent / commands.CREDENTIALS_FILE_NAME
+    vault.encrypt_to(plain, password_file, target)
+    plain.unlink()
+    password_file.unlink()
+    return target
+
+
+def test_credentials_view_prints_the_whole_note_and_leaves_it_encrypted(
+    real_site: Site, note: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    encrypted = note.read_bytes()
+    result = commands.run_credentials(
+        real_site.directory.parent, "view", make_reader(PASSWORD)
+    )
+    assert result == 0
+    assert capfd.readouterr().out == _NOTE_TEXT
+    assert note.read_bytes() == encrypted
+
+
+def test_credentials_edit_opens_the_note_in_the_repository_root(
+    real_site: Site, note: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorder = _Recorder(result=3)
+    monkeypatch.setattr(vault, "run", recorder)
+    result = commands.run_credentials(
+        real_site.directory.parent, "edit", make_reader(PASSWORD)
+    )
+    assert result == 3
+    argv, cwd = recorder.calls[0]
+    assert argv[:2] == ["ansible-vault", "edit"]
+    assert argv[-1] == "credentials.md"
+    assert cwd == note.parent
+
+
+def test_credentials_rekey_reencrypts_the_note_and_no_stage_file(
+    real_site: Site, note: Path, tmp_path: Path
+) -> None:
+    new_password = "a-completely-new-password-9"
+    result = commands.run_credentials(
+        real_site.directory.parent,
+        "rekey",
+        make_reader(PASSWORD, new_password, new_password),
+    )
+    assert result == 0
+    new_file = tmp_path / "new"
+    new_file.write_text(new_password + "\n", encoding="utf-8")
+    vault.decrypt_to(note, new_file, tmp_path / "out")
+    assert (tmp_path / "out").read_text(encoding="utf-8") == _NOTE_TEXT
+    with commands.open_session(real_site, make_reader(PASSWORD)) as session:
+        assert session.key_file.exists()
+
+
+def test_credentials_without_a_note_names_the_missing_file(site: Site) -> None:
+    def must_not_ask(_prompt: str) -> str:
+        pytest.fail("the vault password was asked for")
+
+    with pytest.raises(OsaError, match=r"credentials\.md does not exist"):
+        commands.run_credentials(site.directory.parent, "view", must_not_ask)
+
+
+def test_credentials_refuses_an_unknown_action(site: Site) -> None:
+    with pytest.raises(OsaError, match="Unknown credentials action 'shred'"):
+        commands.run_credentials(site.directory.parent, "shred", make_reader())
+
+
 def test_init_creates_a_complete_stage(tmp_path: Path) -> None:
     sites = tmp_path / "sites"
     sites.mkdir()

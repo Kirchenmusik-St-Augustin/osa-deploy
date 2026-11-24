@@ -7,6 +7,10 @@
 # pre-built from ghcr.io and are pulled in automatically by the
 # podman-auto-update.timer this playbook enables (the unit ships with the
 # podman package but is not enabled by default).
+# Optional, per stage: when the inventory sets augustiner_domain, Caddy also
+# serves the static website of the Augustinian church, which the
+# augustiner-pull.timer mirrors from its public repository (see
+# quadlets/augustiner/pull.sh).
 #
 # Usage (the ./osa wrapper supplies the inventory, osa_site_dir and the vault
 # password file; run ./osa check <stage> for a dry run, ./osa deploy <stage>
@@ -46,6 +50,12 @@
       - { src: logging, dest: "osa/infrastructure/logging" }
       - { src: backend, dest: "osa/osa-backend" }
       - { src: frontend, dest: "osa/osa-frontend" }
+      - { src: augustiner, dest: "augustiner" }
+
+    # Static website of the Augustinian church: mirrored by a short-lived
+    # container into this directory, which Caddy mounts read-only. The
+    # directory exists on every stage, since caddy.container always mounts it.
+    augustiner_data_dir: "{{ ansible_user_dir }}/data/augustiner"
 
     # The complete stack -- a single set of units.
     managed_units_safe:
@@ -74,6 +84,27 @@
           test/qa/production ("development" is never rolled out through
           osa-deploy).
 
+    # Runs before the host name check below, which needs the alias list to
+    # be a list. Caddy refuses to start when one name has two site blocks,
+    # and an alias without the main domain would redirect nowhere.
+    - name: Check the domains of the static website
+      tags: [always]
+      when: augustiner_domain is defined or augustiner_alias_domains is defined
+      vars:
+        aliases: "{{ augustiner_alias_domains | default([]) }}"
+        taken: "{{ [backend_domain, frontend_domain, shorturl_domain] + ([augustiner_domain] if augustiner_domain is defined else []) }}"
+      ansible.builtin.assert:
+        that:
+          - augustiner_domain is defined
+          - aliases is sequence and aliases is not string
+          - aliases | unique | length == aliases | length
+          - aliases | intersect(taken) | length == 0
+        fail_msg: >-
+          augustiner_alias_domains needs augustiner_domain, must be a list
+          (for example ["example.org", "www.example.net"]) and may name each
+          host only once and none of augustiner_domain, backend_domain,
+          frontend_domain or shorturl_domain.
+
     - name: Refuse placeholder or malformed inventory values
       tags: [always]
       ansible.builtin.assert:
@@ -82,10 +113,10 @@
           - not (item is search('(^|\\.)(invalid|example)(\\.|$)|changeme', ignorecase=True))
         fail_msg: "'{{ item }}' is not a usable public hostname (placeholder or malformed)."
         quiet: true
-      loop:
-        - "{{ backend_domain }}"
-        - "{{ frontend_domain }}"
-        - "{{ shorturl_domain }}"
+      loop: >-
+        {{ [backend_domain, frontend_domain, shorturl_domain]
+           + ([augustiner_domain] if augustiner_domain is defined else [])
+           + (augustiner_alias_domains | default([])) }}
 
     - name: Create the directory structure
       tags: [always]
@@ -95,6 +126,7 @@
         - "{{ remote_systemd_user_dir }}"
         - "{{ ansible_user_dir }}/data/osa/{{ app_environment }}/postgres"
         - "{{ ansible_user_dir }}/data/osa/{{ app_environment }}/valkey"
+        - "{{ augustiner_data_dir }}"
       ansible.builtin.file:
         path: "{{ item }}"
         state: directory
@@ -343,7 +375,7 @@
         mode: "0644"
       register: caddy_config_volume_render
 
-    - name: Copy the native systemd units (podman-prune service and timer; not Quadlets, separate target path)
+    - name: Copy the native systemd units (podman-prune service and timer, augustiner-pull timer; not Quadlets, separate target path)
       tags: [always]
       ansible.builtin.copy:
         src: "{{ local_timers_path }}/"
@@ -376,6 +408,40 @@
       # on an already-deployed host the units exist and this task
       # succeeds normally, so this never hides a real diff there.
       ignore_errors: "{{ ansible_check_mode }}"
+
+    # The static website is optional per stage: its timer runs only where the
+    # inventory names a domain for it, and is switched off again once the
+    # domain is removed. The unit file itself is copied to every stage.
+    - name: Enable or disable the timer that mirrors the static website
+      tags: [always]
+      ansible.builtin.systemd:
+        scope: user
+        name: augustiner-pull.timer
+        enabled: "{{ augustiner_domain is defined }}"
+        state: "{{ 'started' if augustiner_domain is defined else 'stopped' }}"
+      environment:
+        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    - name: Look for the copy of the static website
+      tags: [always]
+      when: augustiner_domain is defined
+      ansible.builtin.stat:
+        path: "{{ augustiner_data_dir }}/site/.git"
+      register: augustiner_copy
+
+    # A oneshot start waits until the clone has finished, so a failing first
+    # clone fails the deploy instead of leaving the site empty until the
+    # timer's next run. Later deploys leave the updates to the timer.
+    - name: Clone the static website on its first deploy
+      tags: [always]
+      when: augustiner_domain is defined and not augustiner_copy.stat.exists and not ansible_check_mode
+      ansible.builtin.systemd:
+        scope: user
+        name: augustiner-pull.service
+        state: started
+      environment:
+        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
 
     # ------------------------------------------------------------------
     # Application database role. The backend connects as "osa_app", a

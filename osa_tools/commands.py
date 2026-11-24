@@ -1,4 +1,5 @@
-"""The commands of the wrapper: playbook runs, ssh, vault access and init."""
+"""The commands of the wrapper: playbook runs, ssh, vault access, the access
+note and init."""
 
 import shutil
 from collections.abc import Callable, Generator, Sequence
@@ -21,6 +22,10 @@ from osa_tools.workspace import Session, Workspace
 PasswordReader = Callable[[str], str]
 
 SITE_TEMPLATE_DIR = REPOSITORY_ROOT / "site-template"
+# The access note lies in the root of the site repository, next to sites/,
+# and is encrypted with the same vault password as the stages.
+CREDENTIALS_FILE_NAME = "credentials.md"
+CREDENTIALS_ACTIONS = ("view", "edit", "rekey")
 _STAGE_PLACEHOLDER = "__STAGE__"
 _PRIVATE_KEY_MODE = 0o600
 
@@ -82,7 +87,40 @@ def run_vault(
         return vault.run_manual(action, files, password_file, site.directory)
 
 
+def run_credentials(sites_dir: Path, action: str, read_password: PasswordReader) -> int:
+    """View, edit or rekey the access note next to the sites directory."""
+    if action not in CREDENTIALS_ACTIONS:
+        msg = f"Unknown credentials action '{action}'."
+        raise OsaError(msg)
+    note = credentials_file(sites_dir)
+    if action == "rekey":
+        return _rekey_files([note], read_password)
+    with Workspace() as workspace:
+        password_file = workspace.write(
+            "vault_pass", read_password("Vault password: ") + "\n"
+        )
+        if action == "view":
+            return vault.print_decrypted(note, password_file)
+        return vault.run_manual("edit", [note.name], password_file, note.parent)
+
+
+def credentials_file(sites_dir: Path) -> Path:
+    """Return the access note in the root of the site repository."""
+    note = sites_dir.parent / CREDENTIALS_FILE_NAME
+    if not note.is_file():
+        msg = (
+            f"The access note {note} does not exist. Clone the site repository "
+            "next to this one or pass --sites-dir."
+        )
+        raise OsaError(msg)
+    return note
+
+
 def _rekey_stage(site: Site, read_password: PasswordReader) -> int:
+    return _rekey_files(vault.vaulted_files(site.directory), read_password)
+
+
+def _rekey_files(files: Sequence[Path], read_password: PasswordReader) -> int:
     with Workspace() as workspace:
         old_file = workspace.write(
             "old_pass", read_password("Current vault password: ") + "\n"
@@ -92,7 +130,7 @@ def _rekey_stage(site: Site, read_password: PasswordReader) -> int:
             msg = "The two new passwords differ."
             raise OsaError(msg)
         new_file = workspace.write("new_pass", new_password + "\n")
-        return vault.rekey(vault.vaulted_files(site.directory), old_file, new_file)
+        return vault.rekey(files, old_file, new_file)
 
 
 def init_site(
