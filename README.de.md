@@ -354,7 +354,9 @@ und lassen `SMTP_*` in `osa-backend.env.j2` auskommentiert.
 Site-Verzeichnis. Der Befehl fragt das Vault-Passwort ab, legt Passwortdatei
 und Operator-Key für die Dauer des Laufs in einem privaten Verzeichnis in
 `/dev/shm` ab und entfernt beides danach. Alles nach dem Stage-Namen geht
-unverändert an `ansible-playbook`.
+unverändert an `ansible-playbook` (bei `ssh` an `ssh`), außer `-h`/`--help`:
+`./osa <befehl> --help` zeigt Optionen, Tags und Beispiele des Befehls, ohne
+nach dem Vault-Passwort zu fragen.
 
 ### 5.2 Deploy im Tagesbetrieb
 
