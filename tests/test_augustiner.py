@@ -394,6 +394,48 @@ def test_all_aliases_share_one_redirect_block(tmp_path: Path) -> None:
     assert rendered.count("redir https://www.church-tests.org{uri}") == 1
 
 
+def test_each_redirect_target_gets_one_temporary_block(tmp_path: Path) -> None:
+    rendered = render_caddyfile(
+        tmp_path,
+        CADDYFILE_TEMPLATE,
+        augustiner_domain="church-tests.org",
+        augustiner_redirects={
+            "church-tests.at": "/pages/a.html",
+            "church-tests.net": "/",
+            "www.church-tests.at": "/pages/a.html",
+            "www.church-tests.net": "/",
+            "church-tests.eu": "/pages/a.html#p-x",
+        },
+    )
+    page = _site_block(rendered, "church-tests.at, www.church-tests.at")
+    assert "\tredir https://church-tests.org/pages/a.html 302\n" in page + "\n"
+    home = _site_block(rendered, "church-tests.net, www.church-tests.net")
+    assert "\tredir https://church-tests.org/ 302\n" in home + "\n"
+    # The anchor stays part of the target, so this name gets its own block.
+    anchor = _site_block(rendered, "church-tests.eu")
+    assert "\tredir https://church-tests.org/pages/a.html#p-x 302\n" in anchor + "\n"
+    for block in (page, home, anchor):
+        assert "import access_log" in block
+        assert "header -Server" in block
+        assert "{uri}" not in block
+        assert "file_server" not in block
+    # Three targets, three blocks; the main domain itself is no redirect.
+    assert rendered.count("redir https://church-tests.org/") == 3
+    assert "\nchurch-tests.org {\n" in rendered
+
+
+def test_without_redirects_the_site_renders_as_before(tmp_path: Path) -> None:
+    site: dict[str, object] = {
+        "augustiner_domain": "church-tests.org",
+        "augustiner_alias_domains": ["www.church-tests.org"],
+    }
+    before = render_caddyfile(tmp_path, CADDYFILE_TEMPLATE, **site)
+    assert before == render_caddyfile(
+        tmp_path, CADDYFILE_TEMPLATE, **site, augustiner_redirects={}
+    )
+    assert "redir https://church-tests.org/" not in before
+
+
 def run_domain_checks(
     tmp_path: Path, **site: object
 ) -> subprocess.CompletedProcess[str]:
@@ -429,6 +471,18 @@ def run_domain_checks(
     )
 
 
+REDIRECTS = {
+    "church-tests.at": "/pages/a.html",
+    "www.church-tests.at": "/pages/a.html",
+    "church-tests.net": "/",
+    "www.church-tests.net": "/",
+    "church-tests.eu": "/pages/a.html#p-berufung",
+}
+
+DOMAIN_RULES = "augustiner_alias_domains and augustiner_redirects need"
+HOST_RULES = "is not a usable public hostname"
+
+
 @pytest.mark.parametrize(
     "site",
     [
@@ -438,7 +492,13 @@ def run_domain_checks(
             "augustiner_domain": "www.church-tests.org",
             "augustiner_alias_domains": ["church-tests.org", "www.church-tests.at"],
         },
+        {
+            "augustiner_domain": "church-tests.org",
+            "augustiner_alias_domains": ["www.church-tests.org"],
+            "augustiner_redirects": REDIRECTS,
+        },
     ],
+    ids=["no-site", "main-domain", "aliases", "aliases-and-redirects"],
 )
 def test_valid_domains_pass(tmp_path: Path, site: dict[str, object]) -> None:
     result = run_domain_checks(tmp_path, **site)
@@ -446,30 +506,131 @@ def test_valid_domains_pass(tmp_path: Path, site: dict[str, object]) -> None:
 
 
 @pytest.mark.parametrize(
-    "site",
+    ("site", "reason"),
     [
-        {"augustiner_alias_domains": ["church-tests.org"]},
-        {
-            "augustiner_domain": "www.church-tests.org",
-            "augustiner_alias_domains": "church-tests.org",
-        },
-        {
-            "augustiner_domain": "www.church-tests.org",
-            "augustiner_alias_domains": ["church-tests.org", "church-tests.org"],
-        },
-        {
-            "augustiner_domain": "www.church-tests.org",
-            "augustiner_alias_domains": ["www.church-tests.org"],
-        },
-        {
-            "augustiner_domain": "www.church-tests.org",
-            "augustiner_alias_domains": ["go.osa-tests.org"],
-        },
-        {
-            "augustiner_domain": "www.church-tests.org",
-            "augustiner_alias_domains": ["Bad_Name"],
-        },
-        {"augustiner_domain": "changeme.church-tests.org"},
+        ({"augustiner_alias_domains": ["church-tests.org"]}, DOMAIN_RULES),
+        (
+            {
+                "augustiner_domain": "www.church-tests.org",
+                "augustiner_alias_domains": "church-tests.org",
+            },
+            DOMAIN_RULES,
+        ),
+        (
+            {
+                "augustiner_domain": "www.church-tests.org",
+                "augustiner_alias_domains": ["church-tests.org", "church-tests.org"],
+            },
+            DOMAIN_RULES,
+        ),
+        (
+            {
+                "augustiner_domain": "www.church-tests.org",
+                "augustiner_alias_domains": ["www.church-tests.org"],
+            },
+            DOMAIN_RULES,
+        ),
+        (
+            {
+                "augustiner_domain": "www.church-tests.org",
+                "augustiner_alias_domains": ["go.osa-tests.org"],
+            },
+            DOMAIN_RULES,
+        ),
+        (
+            {
+                "augustiner_domain": "www.church-tests.org",
+                "augustiner_alias_domains": ["Bad_Name"],
+            },
+            HOST_RULES,
+        ),
+        ({"augustiner_domain": "changeme.church-tests.org"}, HOST_RULES),
+        ({"augustiner_redirects": {"church-tests.at": "/"}}, DOMAIN_RULES),
+        (
+            {
+                "augustiner_domain": "www.church-tests.org",
+                "augustiner_redirects": ["church-tests.at"],
+            },
+            DOMAIN_RULES,
+        ),
+        (
+            {
+                "augustiner_domain": "www.church-tests.org",
+                "augustiner_redirects": {"www.church-tests.org": "/"},
+            },
+            DOMAIN_RULES,
+        ),
+        (
+            {
+                "augustiner_domain": "www.church-tests.org",
+                "augustiner_alias_domains": ["church-tests.at"],
+                "augustiner_redirects": {"church-tests.at": "/"},
+            },
+            DOMAIN_RULES,
+        ),
+        (
+            {
+                "augustiner_domain": "www.church-tests.org",
+                "augustiner_redirects": {"go.osa-tests.org": "/"},
+            },
+            DOMAIN_RULES,
+        ),
+        (
+            {
+                "augustiner_domain": "www.church-tests.org",
+                "augustiner_redirects": {"church-tests.at": "pages/a.html"},
+            },
+            DOMAIN_RULES,
+        ),
+        (
+            {
+                "augustiner_domain": "www.church-tests.org",
+                "augustiner_redirects": {"church-tests.at": "/a b {uri}"},
+            },
+            DOMAIN_RULES,
+        ),
+        (
+            {
+                "augustiner_domain": "www.church-tests.org",
+                "augustiner_redirects": {"church-tests.at": 302},
+            },
+            DOMAIN_RULES,
+        ),
+        (
+            {
+                "augustiner_domain": "www.church-tests.org",
+                "augustiner_redirects": {"church-tests.at": "/a.html#p x"},
+            },
+            DOMAIN_RULES,
+        ),
+        (
+            {
+                "augustiner_domain": "www.church-tests.org",
+                "augustiner_redirects": {"church-tests.at": "/a.html#"},
+            },
+            DOMAIN_RULES,
+        ),
+        (
+            {
+                "augustiner_domain": "www.church-tests.org",
+                "augustiner_redirects": {"church-tests.at": "/a.html#b#c"},
+            },
+            DOMAIN_RULES,
+        ),
+        (
+            {
+                "augustiner_domain": "www.church-tests.org",
+                "augustiner_redirects": {"church-tests.at": "#p-x"},
+            },
+            DOMAIN_RULES,
+        ),
+        (
+            {
+                "augustiner_domain": "www.church-tests.org",
+                "augustiner_redirects": {"Bad_Name": "/"},
+            },
+            HOST_RULES,
+        ),
     ],
     ids=[
         "alias-without-main-domain",
@@ -479,10 +640,24 @@ def test_valid_domains_pass(tmp_path: Path, site: dict[str, object]) -> None:
         "osa-domain-as-alias",
         "malformed-alias",
         "placeholder-main-domain",
+        "redirect-without-main-domain",
+        "redirects-as-list",
+        "main-domain-as-redirect",
+        "alias-as-redirect",
+        "osa-domain-as-redirect",
+        "relative-target",
+        "target-with-caddy-syntax",
+        "target-not-a-string",
+        "anchor-with-space",
+        "empty-anchor",
+        "two-anchors",
+        "anchor-without-path",
+        "malformed-redirect-host",
     ],
 )
 def test_invalid_domains_stop_the_deploy(
-    tmp_path: Path, site: dict[str, object]
+    tmp_path: Path, site: dict[str, object], reason: str
 ) -> None:
     result = run_domain_checks(tmp_path, **site)
     assert result.returncode != 0, result.stdout
+    assert reason in result.stdout, result.stdout

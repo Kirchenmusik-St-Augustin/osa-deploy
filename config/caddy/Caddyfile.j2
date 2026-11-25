@@ -264,4 +264,19 @@ http://127.0.0.1:2020 {
 	redir https://{{ augustiner_domain }}{uri} permanent
 }
 {% endif %}
+{% if augustiner_redirects | default({}) %}
+
+# Names of their own that lead to one page of the website: temporary
+# redirect to that fixed address, one block per target page.
+{% for target, names in augustiner_redirects | dict2items | groupby('value') %}
+{% if not loop.first %}
+
+{% endif %}
+{{ names | map(attribute='key') | join(', ') }} {
+	import access_log
+	header -Server
+	redir https://{{ augustiner_domain }}{{ target }} 302
+}
+{% endfor %}
+{% endif %}
 {% endif %}

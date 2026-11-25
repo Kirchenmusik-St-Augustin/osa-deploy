@@ -66,7 +66,7 @@ Services übersetzt.
           ├─ /api, /api/*      → 127.0.0.1:21000 → osa-backend-pod (Präfix entfernt)
           └─ alles andere      → 127.0.0.1:21001 → osa-frontend-pod
      └─ go.hochamt.at (Kurz-URLs) → 127.0.0.1:21000 (mit Präfix /go)
-     └─ www.augustiner.at.schimpl.cc → Dateien aus ~/data/augustiner/site (nur lesend)
+     └─ augustiner_domain (optional) → Dateien aus ~/data/augustiner/site (nur lesend)
   ```
 - Die Anwendungs-Container nutzen `Image=…:latest` und `AutoUpdate=registry`:
   Podmans eigener `podman-auto-update.timer` zieht und startet sie täglich neu,
@@ -125,10 +125,14 @@ bzw. des Entwicklers (Kapitel 6).
 
 Optional, für die statische Website: `augustiner_domain` (ihre Hauptdomain),
 `augustiner_alias_domains` (eine JSON-Liste weiterer Namen, die alle dauerhaft
-auf die Hauptdomain umleiten) und `augustiner_noindex` (Standard `true`,
-sendet `X-Robots-Tag: noindex`, solange eine Übergangs-Domain läuft). Einen
-Alias erst eintragen, wenn sein DNS-Eintrag auf den Host zeigt: Sonst bekommt
-Caddy kein Zertifikat dafür und versucht es immer wieder, was das Log füllt.
+auf die Hauptdomain umleiten, der Pfad bleibt erhalten), `augustiner_redirects`
+(eine JSON-Zuordnung weiterer Namen zu einer Seite der Website, wahlweise mit
+`#Anker`, zum Beispiel `{"example.net": "/pages/a.html#part"}`; jeder Name
+leitet vorübergehend (302) auf diese feste Adresse der Hauptdomain um) und `augustiner_noindex` (Standard
+`true`, sendet `X-Robots-Tag: noindex`, solange eine Übergangs-Domain läuft).
+Einen Alias oder eine Weiterleitung erst eintragen, wenn der DNS-Eintrag auf
+den Host zeigt: Sonst bekommt Caddy kein Zertifikat dafür und versucht es
+immer wieder, was das Log füllt.
 `augustiner_domain` entfernen und deployen nimmt die Website und ihren Timer
 wieder weg.
 

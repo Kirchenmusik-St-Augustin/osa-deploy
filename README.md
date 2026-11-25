@@ -65,7 +65,7 @@ runs containers. Containers are described as systemd Quadlets
           ├─ /api, /api/*      → 127.0.0.1:21000 → osa-backend-pod (prefix stripped)
           └─ everything else   → 127.0.0.1:21001 → osa-frontend-pod
      └─ go.hochamt.at (short URLs) → 127.0.0.1:21000 (with /go prefix)
-     └─ www.augustiner.at.schimpl.cc → files of ~/data/augustiner/site (read-only)
+     └─ augustiner_domain (optional) → files of ~/data/augustiner/site (read-only)
   ```
 - The application containers use `Image=…:latest` and `AutoUpdate=registry`:
   Podman's own `podman-auto-update.timer` pulls and restarts them daily,
@@ -119,10 +119,13 @@ on the developer's machine (chapter 6).
 
 Optional, for the static website: `augustiner_domain` (its main domain),
 `augustiner_alias_domains` (a JSON list of further names, each redirected
-permanently to the main domain) and `augustiner_noindex` (default `true`,
-sends `X-Robots-Tag: noindex` while an interim domain is in use). Add an alias
-only once its DNS record points at the host: otherwise Caddy gets no
-certificate for it and keeps retrying, which fills the log. Removing
+permanently to the main domain, path kept), `augustiner_redirects` (a JSON
+mapping of further names to one page of the site, optionally with an
+`#anchor`, for example `{"example.net": "/pages/a.html#part"}`; each name
+redirects temporarily (302) to that fixed address on the main domain) and `augustiner_noindex` (default
+`true`, sends `X-Robots-Tag: noindex` while an interim domain is in use). Add
+an alias or a redirect only once its DNS record points at the host: otherwise
+Caddy gets no certificate for it and keeps retrying, which fills the log. Removing
 `augustiner_domain` and deploying takes the site and its timer away again.
 
 Only `production` is deployed today. `test` and `qa` are created the same way
