@@ -9,8 +9,9 @@
 # podman package but is not enabled by default).
 # Optional, per stage: when the inventory sets augustiner_domain, Caddy also
 # serves the static website of the Augustinian church, which the
-# augustiner-pull.timer mirrors from its public repository (see
-# quadlets/augustiner/pull.sh), plus its optional alias and redirect names.
+# augustiner-pull.timer mirrors from its private repository with a read-only
+# deploy key (see quadlets/augustiner/pull.sh), plus its optional alias and
+# redirect names.
 #
 # Usage (the ./osa wrapper supplies the inventory, osa_site_dir and the vault
 # password file; run ./osa check <stage> for a dry run, ./osa deploy <stage>
@@ -132,6 +133,21 @@
            + (augustiner_alias_domains | default([]))
            + (augustiner_redirects | default({}) | list) }}
 
+    # The website repository is private. Without its deploy key every mirror
+    # run would fail with a bare "Permission denied (publickey)", and a fresh
+    # stage would stay without the site; stop before anything changes.
+    - name: Require the deploy key of the static website
+      tags: [always]
+      when: augustiner_domain is defined
+      ansible.builtin.assert:
+        that: (local_secrets_path ~ '/augustiner-pull.key') is file
+        fail_msg: >-
+          augustiner_domain is set, but {{ local_secrets_path }}/augustiner-pull.key
+          is missing. The website repository is private: put the private half
+          of its read-only deploy key there and encrypt it with
+          ./osa vault <stage> encrypt secrets/augustiner-pull.key.
+        quiet: true
+
     - name: Create the directory structure
       tags: [always]
       loop:
@@ -175,13 +191,16 @@
         podman unshare sh -c 'chown -R 999:999 "$0" && chmod 700 "$0"'
         {{ ansible_user_dir }}/data/osa/{{ app_environment }}/postgres
 
-    - name: "Find static *.env files in the secrets directory of the stage"
+    # *.key: private SSH keys (the deploy key of the static website). They go
+    # through the same encryption check, copy and orphan check as the
+    # environment files.
+    - name: "Find static *.env and *.key files in the secrets directory of the stage"
       tags: [always]
       delegate_to: localhost
       become: no
       ansible.builtin.find:
         paths: "{{ local_secrets_path }}"
-        patterns: "*.env"
+        patterns: ["*.env", "*.key"]
       register: secret_files
 
     - name: "Find templated *.env.j2 files in the secrets directory of the stage"

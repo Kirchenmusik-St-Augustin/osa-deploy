@@ -38,8 +38,8 @@ and as the full commit SHA. This repository builds no image and clones no
 application repository onto the host; it distributes configuration and
 secrets and makes sure the right images run. The one exception is the
 optional static website of the Augustinian church: where the inventory
-enables it, a small container mirrors that public third-party repository onto
-the host (section 2.4).
+enables it, a small container mirrors that private third-party repository
+onto the host with a read-only deploy key (section 2.4).
 
 ### 2.2 Runtime layout
 
@@ -74,8 +74,11 @@ runs containers. Containers are described as systemd Quadlets
   configuration, for an immediate deploy and to pin a release.
 - Dozzle is a read-only log viewer behind basic auth. The weekly
   `podman-prune.timer` runs `podman system prune -a -f` on the host.
-- Optional: the static website of the Augustinian church, a public
-  third-party repository. `augustiner-pull.timer` starts the short-lived
+- Optional: the static website of the Augustinian church, a private
+  third-party repository, read over SSH with a deploy key that has no write
+  access (`secrets/augustiner-pull.key`, section 7.1) and only against the
+  GitHub host keys pinned in `quadlets/augustiner/known_hosts`.
+  `augustiner-pull.timer` starts the short-lived
   `augustiner-pull` container every five minutes; it mirrors the branch `main`
   into `~/data/augustiner/site` (`git fetch` and `reset --hard`, so a
   force-push upstream is followed). Caddy serves that directory read-only and
@@ -524,6 +527,7 @@ decrypts first. Edit later with `./osa vault <stage> edit secrets/<file>`.
 | `osa-backend-pg.env` | bootstrap role of PostgreSQL |
 | `osa-backend-valkey.env` | `VALKEY_PASSWORD` |
 | `osa-frontend.env.j2` | runtime configuration of the frontend |
+| `augustiner-pull.key` | only with `augustiner_domain`: private half of the read-only deploy key of the static website's repository |
 
 Generate a fresh password for every stage and never reuse one of another
 stage: `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`. The
@@ -535,6 +539,18 @@ docker.io/library/caddy:2.11 caddy hash-password --algorithm bcrypt
 as sensitive as the stage's secrets. The optional inventory variable
 `logging_allowed_cidrs=["203.0.113.0/24"]` answers clients outside the list
 with `403` before any credential is examined.
+
+**Deploy key of the static website.** The repository owner registers the
+public half as a deploy key without write access; the private half is
+`augustiner-pull.key`, which the deploy copies to `~/.env` (a stage with
+`augustiner_domain` and without the file stops the deploy). One key may serve
+several stages, since GitHub binds a deploy key to the repository, not to a
+host. Rotate: `ssh-keygen -t ed25519 -N '' -f augustiner-pull.key` in an
+empty directory, have the owner swap the public half, copy the private half
+to `secrets/`, `./osa vault <stage> encrypt secrets/augustiner-pull.key`,
+`./osa deploy <stage>`, delete the plain copy, then check with
+`systemctl --user start augustiner-pull.service` and
+`journalctl --user -u augustiner-pull -n 5` on the host.
 
 **Database roles.** `POSTGRES_USER` (`osa`) is the cluster bootstrap role:
 always a superuser, for administration only. The backend and the worker

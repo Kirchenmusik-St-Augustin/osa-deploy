@@ -38,8 +38,9 @@ und als vollständigen Commit-SHA. Dieses Repository baut kein Image und
 klont kein Anwendungs-Repository auf den Host; es verteilt Konfiguration und
 Secrets und stellt sicher, dass die richtigen Images laufen. Die einzige
 Ausnahme ist die optionale statische Website der Augustinerkirche: Wo das
-Inventar sie einschaltet, spiegelt ein kleiner Container dieses öffentliche
-Fremd-Repository auf den Host (Abschnitt 2.4).
+Inventar sie einschaltet, spiegelt ein kleiner Container dieses private
+Fremd-Repository mit einem Deploy-Key ohne Schreibrecht auf den Host
+(Abschnitt 2.4).
 
 ### 2.2 Laufzeit-Aufbau
 
@@ -77,8 +78,11 @@ Services übersetzt.
 - Dozzle ist ein schreibgeschützter Log-Viewer hinter Basic Auth. Der
   wöchentliche `podman-prune.timer` führt `podman system prune -a -f` auf dem
   Host aus.
-- Optional: die statische Website der Augustinerkirche, ein öffentliches
-  Fremd-Repository. `augustiner-pull.timer` startet alle fünf Minuten den
+- Optional: die statische Website der Augustinerkirche, ein privates
+  Fremd-Repository, gelesen über SSH mit einem Deploy-Key ohne Schreibrecht
+  (`secrets/augustiner-pull.key`, Abschnitt 7.1) und nur gegen die in
+  `quadlets/augustiner/known_hosts` hinterlegten GitHub-Hostkeys.
+  `augustiner-pull.timer` startet alle fünf Minuten den
   kurzlebigen Container `augustiner-pull`; er spiegelt den Branch `main` nach
   `~/data/augustiner/site` (`git fetch` und `reset --hard`, damit auch ein
   Force-Push im Original übernommen wird). Caddy liefert dieses Verzeichnis
@@ -552,6 +556,7 @@ zuerst entschlüsselt. Später bearbeiten mit
 | `osa-backend-pg.env` | Bootstrap-Rolle von PostgreSQL |
 | `osa-backend-valkey.env` | `VALKEY_PASSWORD` |
 | `osa-frontend.env.j2` | Laufzeitkonfiguration des Frontends |
+| `augustiner-pull.key` | nur mit `augustiner_domain`: privater Teil des Deploy-Keys (nur lesend) für das Repository der statischen Website |
 
 Für jede Stage ein frisches Passwort erzeugen und nie eines einer anderen
 Stage wiederverwenden: `python3 -c "import secrets;
@@ -564,6 +569,19 @@ Podman-API-Socket, sein Login ist also so sensibel wie die Secrets der Stage.
 Die optionale Inventar-Variable `logging_allowed_cidrs=["203.0.113.0/24"]`
 beantwortet Clients außerhalb der Liste mit `403`, bevor ein Zugangsdatum
 geprüft wird.
+
+**Deploy-Key der statischen Website.** Der Owner des Repositorys trägt den
+öffentlichen Teil als Deploy-Key ohne Schreibrecht ein; der private Teil ist
+`augustiner-pull.key`, den das Deploy nach `~/.env` kopiert (eine Stage mit
+`augustiner_domain` ohne diese Datei stoppt das Deploy). Ein Key darf mehreren
+Stages dienen, weil GitHub einen Deploy-Key an das Repository bindet, nicht an
+einen Host. Rotieren: `ssh-keygen -t ed25519 -N '' -f augustiner-pull.key` in
+einem leeren Verzeichnis, den öffentlichen Teil vom Owner tauschen lassen, den
+privaten nach `secrets/` kopieren,
+`./osa vault <stage> encrypt secrets/augustiner-pull.key`,
+`./osa deploy <stage>`, die Klartext-Kopie löschen, dann auf dem Host mit
+`systemctl --user start augustiner-pull.service` und
+`journalctl --user -u augustiner-pull -n 5` prüfen.
 
 **Datenbankrollen.** `POSTGRES_USER` (`osa`) ist die Bootstrap-Rolle des
 Clusters: immer Superuser, nur für Administration. Backend und Worker

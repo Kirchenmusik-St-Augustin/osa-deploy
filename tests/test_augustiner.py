@@ -19,6 +19,7 @@ from osa_tools.playbooks import PLAYBOOK_DIR, REPOSITORY_ROOT
 
 PULL_SCRIPT = REPOSITORY_ROOT / "quadlets" / "augustiner" / "pull.sh"
 PULL_QUADLET = REPOSITORY_ROOT / "quadlets" / "augustiner" / "augustiner-pull.container"
+PULL_KNOWN_HOSTS = REPOSITORY_ROOT / "quadlets" / "augustiner" / "known_hosts"
 PULL_TIMER = REPOSITORY_ROOT / "systemd-timers" / "augustiner-pull.timer"
 CADDY_QUADLET = REPOSITORY_ROOT / "quadlets" / "caddy" / "caddy.container"
 CADDYFILE_TEMPLATE = REPOSITORY_ROOT / "config" / "caddy" / "Caddyfile.j2"
@@ -50,12 +51,21 @@ def _git_env(home: Path) -> dict[str, str]:
 
 
 class Upstream:
-    """A bare repository standing in for GitHub, plus a working copy to push from."""
+    """A bare repository standing in for GitHub, plus a working copy to push from.
+
+    The deploy key and the host keys are placeholders: git reads a local path
+    without SSH, so only their presence matters here.
+    """
 
     def __init__(self, root: Path) -> None:
+        root.mkdir(parents=True, exist_ok=True)
         self.env = _git_env(root)
         self.bare = root / "upstream.git"
         self.work = root / "author"
+        self.ssh_key = root / "deploy.key"
+        self.ssh_key.write_text("placeholder key\n", encoding="utf-8")
+        self.known_hosts = root / "known_hosts"
+        self.known_hosts.write_text("placeholder host key\n", encoding="utf-8")
         self._git(
             root, "init", "--quiet", "--bare", "--initial-branch=main", str(self.bare)
         )
@@ -113,18 +123,27 @@ def target(tmp_path: Path) -> Path:
     return parent / "site"
 
 
-def run_pull(
-    upstream: Upstream, target: Path, min_free_mb: int = 1
-) -> subprocess.CompletedProcess[str]:
-    env = {
+def pull_env(upstream: Upstream, target: Path, min_free_mb: int = 1) -> dict[str, str]:
+    return {
         **upstream.env,
         "AUG_REPO_URL": str(upstream.bare),
         "AUG_TARGET": str(target),
         "AUG_MIN_FREE_MB": str(min_free_mb),
+        "AUG_SSH_KEY": str(upstream.ssh_key),
+        "AUG_KNOWN_HOSTS": str(upstream.known_hosts),
     }
+
+
+def run_script(env: Mapping[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["sh", str(PULL_SCRIPT)], env=env, capture_output=True, text=True, check=False
     )
+
+
+def run_pull(
+    upstream: Upstream, target: Path, min_free_mb: int = 1
+) -> subprocess.CompletedProcess[str]:
+    return run_script(pull_env(upstream, target, min_free_mb))
 
 
 def head_of(repository: Path) -> str:
@@ -218,22 +237,85 @@ def test_nothing_runs_when_the_disk_is_nearly_full(
     assert not target.with_name("site.tmp").exists()
 
 
-@pytest.mark.parametrize("missing", ["AUG_REPO_URL", "AUG_TARGET", "AUG_MIN_FREE_MB"])
+@pytest.mark.parametrize(
+    "missing",
+    ["AUG_REPO_URL", "AUG_TARGET", "AUG_MIN_FREE_MB", "AUG_SSH_KEY", "AUG_KNOWN_HOSTS"],
+)
 def test_the_script_refuses_to_run_without_its_settings(
     upstream: Upstream, target: Path, missing: str
 ) -> None:
-    env = {
-        **upstream.env,
-        "AUG_REPO_URL": str(upstream.bare),
-        "AUG_TARGET": str(target),
-        "AUG_MIN_FREE_MB": "1",
-    }
+    env = pull_env(upstream, target)
     del env[missing]
-    result = subprocess.run(
-        ["sh", str(PULL_SCRIPT)], env=env, capture_output=True, text=True, check=False
-    )
+    result = run_script(env)
     assert result.returncode != 0
     assert f"{missing} is not set" in result.stderr
+
+
+@pytest.mark.parametrize("unreadable", ["AUG_SSH_KEY", "AUG_KNOWN_HOSTS"])
+def test_nothing_runs_without_the_key_files(
+    upstream: Upstream, target: Path, unreadable: str
+) -> None:
+    upstream.commit({"index.html": "v1"}, "first")
+    env = pull_env(upstream, target)
+    env[unreadable] = str(target.parent / "absent")
+    result = run_script(env)
+    assert result.returncode == 1
+    assert f"cannot read {target.parent / 'absent'}" in result.stderr
+    assert not target.exists()
+
+
+def test_a_moved_repository_is_followed(
+    upstream: Upstream, target: Path, tmp_path: Path
+) -> None:
+    upstream.commit({"index.html": "old home", "old.html": "old"}, "first")
+    run_pull(upstream, target)
+    moved = Upstream(tmp_path / "moved")
+    new_head = moved.commit({"index.html": "new home"}, "unrelated history")
+    result = run_script({**pull_env(upstream, target), "AUG_REPO_URL": str(moved.bare)})
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("updated ")
+    assert head_of(target) == new_head
+    assert (target / "index.html").read_text(encoding="utf-8") == "new home"
+    assert not (target / "old.html").exists()
+    origin = subprocess.run(
+        ["git", "-C", str(target), "remote", "get-url", "origin"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert origin.stdout.strip() == str(moved.bare)
+
+
+def test_ssh_uses_only_the_deploy_key_and_the_pinned_host_keys(
+    upstream: Upstream, target: Path, tmp_path: Path
+) -> None:
+    """A stand-in ssh records how git calls it, then refuses the connection."""
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    recorded = tmp_path / "ssh-args"
+    fake_ssh = tools / "ssh"
+    fake_ssh.write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$@" > "{recorded}"\nexit 255\n', encoding="utf-8"
+    )
+    fake_ssh.chmod(0o755)
+    env = {
+        **pull_env(upstream, target),
+        "AUG_REPO_URL": "git@github.com:owner/website.git",
+        "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}",
+    }
+    result = run_script(env)
+    assert result.returncode != 0
+    assert not target.exists()
+    arguments = recorded.read_text(encoding="utf-8").splitlines()
+    assert arguments[arguments.index("-i") + 1] == str(upstream.ssh_key)
+    for option in (
+        "IdentitiesOnly=yes",
+        "BatchMode=yes",
+        "StrictHostKeyChecking=yes",
+        f"UserKnownHostsFile={upstream.known_hosts}",
+    ):
+        assert option in arguments
+    assert "git@github.com" in arguments
 
 
 # --- units -----------------------------------------------------------------
@@ -256,6 +338,34 @@ def test_the_mirror_container_is_pinned_and_hardened() -> None:
     assert _unit_values(PULL_QUADLET, "DropCapability") == ["all"]
     assert _unit_values(PULL_QUADLET, "Type") == ["oneshot"]
     assert "[Install]" not in PULL_QUADLET.read_text(encoding="utf-8").splitlines()
+
+
+def test_the_mirror_fetches_over_ssh_with_read_only_key_files() -> None:
+    (url,) = _unit_values(PULL_QUADLET, "Environment=AUG_REPO_URL")
+    assert url.startswith("git@github.com:")
+    environment = _unit_values(PULL_QUADLET, "Environment")
+    assert "AUG_SSH_KEY=/opt/augustiner/deploy.key" in environment
+    assert "AUG_KNOWN_HOSTS=/opt/augustiner/known_hosts" in environment
+    mounts = _unit_values(PULL_QUADLET, "Volume")
+    assert "%h/.env/augustiner-pull.key:/opt/augustiner/deploy.key:ro,z" in mounts
+    assert (
+        "%h/.config/containers/systemd/augustiner/known_hosts:"
+        "/opt/augustiner/known_hosts:ro,z"
+    ) in mounts
+
+
+def test_only_the_host_keys_of_github_are_trusted() -> None:
+    entries = [
+        line.split()
+        for line in PULL_KNOWN_HOSTS.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    ]
+    assert {host for host, _type, _key in entries} == {"github.com"}
+    assert {key_type for _host, key_type, _key in entries} == {
+        "ssh-ed25519",
+        "ecdsa-sha2-nistp256",
+        "ssh-rsa",
+    }
 
 
 def test_only_the_mirror_writes_and_caddy_only_reads_the_copy() -> None:
@@ -436,17 +546,15 @@ def test_without_redirects_the_site_renders_as_before(tmp_path: Path) -> None:
     assert "redir https://church-tests.org/" not in before
 
 
-def run_domain_checks(
-    tmp_path: Path, **site: object
+def run_deploy_tasks(
+    tmp_path: Path, wanted: set[str], **variables: object
 ) -> subprocess.CompletedProcess[str]:
-    """Runs the two domain tasks of deploy.yml on their own against localhost."""
+    """Runs the named tasks of deploy.yml on their own against localhost."""
     plays = yaml.safe_load((PLAYBOOK_DIR / "deploy.yml").read_text(encoding="utf-8"))
     tasks: list[Mapping[str, object]] = plays[0]["tasks"]
-    wanted = {
-        "Check the domains of the static website",
-        "Refuse placeholder or malformed inventory values",
-    }
-    playbook = tmp_path / "domains.yml"
+    selected = [task for task in tasks if task["name"] in wanted]
+    assert len(selected) == len(wanted)
+    playbook = tmp_path / "tasks.yml"
     playbook.write_text(
         yaml.safe_dump(
             [
@@ -454,20 +562,54 @@ def run_domain_checks(
                     "hosts": "localhost",
                     "connection": "local",
                     "gather_facts": False,
-                    "tasks": [task for task in tasks if task["name"] in wanted],
+                    "tasks": selected,
                 }
             ]
         ),
         encoding="utf-8",
     )
-    variables = tmp_path / "vars.json"
-    variables.write_text(json.dumps({**OSA_DOMAINS, **site}), encoding="utf-8")
+    variables_file = tmp_path / "vars.json"
+    variables_file.write_text(
+        json.dumps({**OSA_DOMAINS, **variables}), encoding="utf-8"
+    )
     return subprocess.run(
-        ["ansible-playbook", "-i", "localhost,", "-e", f"@{variables}", str(playbook)],
+        [
+            "ansible-playbook",
+            "-i",
+            "localhost,",
+            "-e",
+            f"@{variables_file}",
+            str(playbook),
+        ],
         env=_ansible_env(tmp_path),
         capture_output=True,
         text=True,
         check=False,
+    )
+
+
+DOMAIN_TASKS = {
+    "Check the domains of the static website",
+    "Refuse placeholder or malformed inventory values",
+    "Require the deploy key of the static website",
+}
+
+
+def secrets_dir(tmp_path: Path, *names: str) -> Path:
+    directory = tmp_path / "secrets"
+    directory.mkdir()
+    for name in names:
+        (directory / name).write_text("$ANSIBLE_VAULT;1.1;AES256\n", encoding="utf-8")
+    return directory
+
+
+def run_domain_checks(
+    tmp_path: Path, **site: object
+) -> subprocess.CompletedProcess[str]:
+    """Runs the site checks of deploy.yml for a stage that has the deploy key."""
+    secrets = secrets_dir(tmp_path, "augustiner-pull.key")
+    return run_deploy_tasks(
+        tmp_path, DOMAIN_TASKS, local_secrets_path=str(secrets), **site
     )
 
 
@@ -661,3 +803,47 @@ def test_invalid_domains_stop_the_deploy(
     result = run_domain_checks(tmp_path, **site)
     assert result.returncode != 0, result.stdout
     assert reason in result.stdout, result.stdout
+
+
+DEPLOY_KEY_RULE = "secrets/augustiner-pull.key is missing"
+
+
+def test_a_stage_with_the_site_needs_the_deploy_key(tmp_path: Path) -> None:
+    result = run_deploy_tasks(
+        tmp_path,
+        DOMAIN_TASKS,
+        local_secrets_path=str(secrets_dir(tmp_path)),
+        augustiner_domain="www.church-tests.org",
+    )
+    assert result.returncode != 0, result.stdout
+    assert DEPLOY_KEY_RULE in result.stdout, result.stdout
+
+
+def test_a_stage_without_the_site_needs_no_deploy_key(tmp_path: Path) -> None:
+    result = run_deploy_tasks(
+        tmp_path, DOMAIN_TASKS, local_secrets_path=str(secrets_dir(tmp_path))
+    )
+    assert result.returncode == 0, result.stdout
+
+
+SECRET_TASKS = {
+    "Find static *.env and *.key files in the secrets directory of the stage",
+    "Find templated *.env.j2 files in the secrets directory of the stage",
+    "Refuse to deploy secret files that are not vault-encrypted",
+}
+
+
+def test_a_plain_text_deploy_key_is_refused(tmp_path: Path) -> None:
+    secrets = secrets_dir(tmp_path, "caddy.env")
+    (secrets / "augustiner-pull.key").write_text(
+        "plain text instead of vault\n", encoding="utf-8"
+    )
+    result = run_deploy_tasks(tmp_path, SECRET_TASKS, local_secrets_path=str(secrets))
+    assert result.returncode != 0, result.stdout
+    assert "augustiner-pull.key" in result.stdout, result.stdout
+
+
+def test_an_encrypted_deploy_key_passes(tmp_path: Path) -> None:
+    secrets = secrets_dir(tmp_path, "caddy.env", "augustiner-pull.key")
+    result = run_deploy_tasks(tmp_path, SECRET_TASKS, local_secrets_path=str(secrets))
+    assert result.returncode == 0, result.stdout

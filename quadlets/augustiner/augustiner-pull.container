@@ -15,9 +15,12 @@ Image=docker.io/alpine/git:v2.54.1@sha256:d2f64ba8dff777a6b8fcc313c3efa06e7a06df
 Entrypoint=/bin/sh
 Exec=/opt/augustiner/pull.sh
 
-Environment=AUG_REPO_URL=https://github.com/felosaurier/augustinerkirche-wien.git
+# A private repository, fetched over SSH with a read-only deploy key.
+Environment=AUG_REPO_URL=git@github.com:felosaurier/augustinerkirche-website.git
 Environment=AUG_BRANCH=main
 Environment=AUG_TARGET=/work/site
+Environment=AUG_SSH_KEY=/opt/augustiner/deploy.key
+Environment=AUG_KNOWN_HOSTS=/opt/augustiner/known_hosts
 # Leaves room for the database on the same disk: the run is refused below
 # this much free space.
 Environment=AUG_MIN_FREE_MB=2048
@@ -26,6 +29,10 @@ Environment=HOME=/tmp
 # The only writer of the copy. Caddy mounts the same directory read-only.
 Volume=%h/data/augustiner:/work:rw,z
 Volume=%h/.config/containers/systemd/augustiner/pull.sh:/opt/augustiner/pull.sh:ro,z
+Volume=%h/.config/containers/systemd/augustiner/known_hosts:/opt/augustiner/known_hosts:ro,z
+# The private deploy key; deploy.yml copies it from the stage's
+# secrets/augustiner-pull.key (vault-encrypted) like every other secret.
+Volume=%h/.env/augustiner-pull.key:/opt/augustiner/deploy.key:ro,z
 
 ReadOnly=true
 NoNewPrivileges=true
