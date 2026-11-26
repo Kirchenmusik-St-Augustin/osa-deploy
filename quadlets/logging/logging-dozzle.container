@@ -28,7 +28,6 @@ Volume=%t/podman/podman.sock:/var/run/docker.sock:ro
 SecurityLabelDisable=true
 
 PublishPort=127.0.0.1:8081:8080
-Environment=DOZZLE_BASE=/logging/dozzle
 Environment=DOZZLE_NO_ANALYTICS=true
 Environment=TZ=Europe/Vienna
 

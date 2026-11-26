@@ -60,11 +60,11 @@ runs containers. Containers are described as systemd Quadlets
      ▼
   Caddy (host network)
      └─ einteilung.hochamt.at
-          ├─ /logging/dozzle*  → 127.0.0.1:8081 → Dozzle (basic auth)
           ├─ /go/*             → redirect → go.hochamt.at
           ├─ /api, /api/*      → 127.0.0.1:21000 → osa-backend-pod (prefix stripped)
           └─ everything else   → 127.0.0.1:21001 → osa-frontend-pod
      └─ go.hochamt.at (short URLs) → 127.0.0.1:21000 (with /go prefix)
+     └─ logging_domain (log viewer) → 127.0.0.1:8081 → Dozzle (basic auth)
      └─ augustiner_domain (optional) → files of ~/data/augustiner/site (read-only)
   ```
 - The application containers use `Image=…:latest` and `AutoUpdate=registry`:
@@ -113,9 +113,9 @@ osa-access/sites/<stage>/
 ```
 
 `inventory.ini` carries `app_environment`, `backend_domain`,
-`frontend_domain`, `shorturl_domain` and `acme_email`. The domains are
-independent (backend and frontend may share one, as on production, or not) and
-are rendered into the Caddyfile and into the `*.env.j2` files at deploy time.
+`frontend_domain`, `shorturl_domain`, `logging_domain` and `acme_email`. The
+domains are independent (backend and frontend may share one, as on production,
+or not; the log viewer needs a name of its own) and are rendered into the Caddyfile and into the `*.env.j2` files at deploy time.
 Each stage keeps its database under `~/data/osa/<stage>/postgres` on its
 host. `development` is deliberately not a stage here: local development runs
 on the developer's machine (chapter 6).
@@ -145,8 +145,9 @@ systemctl --user list-units --failed
 journalctl --user -u osa-backend-pod -n 100
 ```
 
-The log viewer is at `https://einteilung.hochamt.at/logging/dozzle` (basic
-auth, the login is in `secrets/caddy.env`). The units are `caddy.service`,
+The log viewer is at `https://<logging_domain>`, on production
+`https://dozzle.augustinerkirche.at` (basic auth, the login is in
+`secrets/caddy.env`). The units are `caddy.service`,
 `osa-backend-pod.service`, `osa-frontend-pod.service`,
 `logging-dozzle.service`, `podman-auto-update.timer` and `podman-prune.timer`,
 plus `augustiner-pull.timer` where the static website is enabled. Its last
@@ -249,8 +250,8 @@ use `--force` with the backup taken right before the bump.
   | openSUSE Leap 16.0 | 5.4.2 |
 
   Too old: Debian 12, Ubuntu 24.04, RHEL-family 9.x, openSUSE Leap 15.x.
-- **DNS** of `backend_domain`, `frontend_domain` and `shorturl_domain` must
-  point at the server before the first `./osa deploy`. Caddy requests the
+- **DNS** of `backend_domain`, `frontend_domain`, `shorturl_domain` and
+  `logging_domain` must point at the server before the first `./osa deploy`. Caddy requests the
   certificates from Let's Encrypt by itself and needs port 80 to reach the
   server; a domain that does not resolve yet makes certificate issuance fail
   and counts against the rate limits of Let's Encrypt. Check with
@@ -535,8 +536,9 @@ Valkey password must be identical in `osa-backend.env.j2` and
 `osa-backend-valkey.env`. The Caddy hash is made interactively so the password
 never reaches the shell history: `podman run -it --rm
 docker.io/library/caddy:2.11 caddy hash-password --algorithm bcrypt
---bcrypt-cost 14`. The log viewer holds the Podman API socket, so its login is
-as sensitive as the stage's secrets. The optional inventory variable
+--bcrypt-cost 12`. Every failed attempt costs Caddy one bcrypt comparison; cost
+12 keeps that at a fraction of a second on a small host. The log viewer holds
+the Podman API socket, so its login is as sensitive as the stage's secrets. The optional inventory variable
 `logging_allowed_cidrs=["203.0.113.0/24"]` answers clients outside the list
 with `403` before any credential is examined.
 

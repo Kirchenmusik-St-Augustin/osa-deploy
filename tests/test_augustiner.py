@@ -5,7 +5,6 @@ test host; the Caddyfile and the domain checks run through Ansible itself, so
 the tests see exactly what a deploy renders and asserts.
 """
 
-import json
 import os
 import subprocess
 from collections.abc import Mapping
@@ -16,6 +15,7 @@ import pytest
 import yaml
 
 from osa_tools.playbooks import PLAYBOOK_DIR, REPOSITORY_ROOT
+from tests.ansible_helpers import render_caddyfile, run_deploy_tasks
 
 PULL_SCRIPT = REPOSITORY_ROOT / "quadlets" / "augustiner" / "pull.sh"
 PULL_QUADLET = REPOSITORY_ROOT / "quadlets" / "augustiner" / "augustiner-pull.container"
@@ -24,14 +24,6 @@ PULL_TIMER = REPOSITORY_ROOT / "systemd-timers" / "augustiner-pull.timer"
 CADDY_QUADLET = REPOSITORY_ROOT / "quadlets" / "caddy" / "caddy.container"
 CADDYFILE_TEMPLATE = REPOSITORY_ROOT / "config" / "caddy" / "Caddyfile.j2"
 SITE_MARKER = "{% if augustiner_domain is defined %}"
-
-OSA_DOMAINS = {
-    "backend_domain": "app.osa-tests.org",
-    "frontend_domain": "app.osa-tests.org",
-    "shorturl_domain": "go.osa-tests.org",
-    "acme_email": "ops@osa-tests.org",
-}
-
 
 # --- mirror script ---------------------------------------------------------
 
@@ -405,42 +397,6 @@ def test_deploy_clones_only_on_the_first_real_run() -> None:
 # --- Caddyfile and domain checks through Ansible ---------------------------
 
 
-def _ansible_env(tmp_path: Path) -> dict[str, str]:
-    return {
-        **os.environ,
-        "ANSIBLE_LOCAL_TEMP": str(tmp_path / "ansible-tmp"),
-        "ANSIBLE_NOCOLOR": "1",
-    }
-
-
-def render_caddyfile(tmp_path: Path, template: Path, **site: object) -> str:
-    destination = tmp_path / "Caddyfile"
-    variables = tmp_path / "vars.json"
-    variables.write_text(json.dumps({**OSA_DOMAINS, **site}), encoding="utf-8")
-    result = subprocess.run(
-        [
-            "ansible",
-            "localhost",
-            "-i",
-            "localhost,",
-            "-c",
-            "local",
-            "-m",
-            "ansible.builtin.template",
-            "-a",
-            f"src={template} dest={destination}",
-            "-e",
-            f"@{variables}",
-        ],
-        env=_ansible_env(tmp_path),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    return destination.read_text(encoding="utf-8")
-
-
 def test_without_the_site_the_caddyfile_stays_as_before(tmp_path: Path) -> None:
     text = CADDYFILE_TEMPLATE.read_text(encoding="utf-8")
     assert text.count(SITE_MARKER) == 1
@@ -465,7 +421,7 @@ def test_the_site_block_serves_only_the_live_package(tmp_path: Path) -> None:
     assert "root * /srv/augustiner/site" in block
     assert "import augustiner_headers" in block
     assert 'X-Robots-Tag "noindex, nofollow, noarchive"' in block
-    for application_snippet in ("frontend_csp", "backend_api", "logging_viewer"):
+    for application_snippet in ("frontend_csp", "backend_api", "127.0.0.1:8081"):
         assert application_snippet not in block
     assert "@not_read not method GET HEAD" in block
     assert "@outside_package not path / /index.html" in block
@@ -544,48 +500,6 @@ def test_without_redirects_the_site_renders_as_before(tmp_path: Path) -> None:
         tmp_path, CADDYFILE_TEMPLATE, **site, augustiner_redirects={}
     )
     assert "redir https://church-tests.org/" not in before
-
-
-def run_deploy_tasks(
-    tmp_path: Path, wanted: set[str], **variables: object
-) -> subprocess.CompletedProcess[str]:
-    """Runs the named tasks of deploy.yml on their own against localhost."""
-    plays = yaml.safe_load((PLAYBOOK_DIR / "deploy.yml").read_text(encoding="utf-8"))
-    tasks: list[Mapping[str, object]] = plays[0]["tasks"]
-    selected = [task for task in tasks if task["name"] in wanted]
-    assert len(selected) == len(wanted)
-    playbook = tmp_path / "tasks.yml"
-    playbook.write_text(
-        yaml.safe_dump(
-            [
-                {
-                    "hosts": "localhost",
-                    "connection": "local",
-                    "gather_facts": False,
-                    "tasks": selected,
-                }
-            ]
-        ),
-        encoding="utf-8",
-    )
-    variables_file = tmp_path / "vars.json"
-    variables_file.write_text(
-        json.dumps({**OSA_DOMAINS, **variables}), encoding="utf-8"
-    )
-    return subprocess.run(
-        [
-            "ansible-playbook",
-            "-i",
-            "localhost,",
-            "-e",
-            f"@{variables_file}",
-            str(playbook),
-        ],
-        env=_ansible_env(tmp_path),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
 
 
 DOMAIN_TASKS = {

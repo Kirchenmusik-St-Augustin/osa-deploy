@@ -119,6 +119,27 @@
           starts with / and holds only letters, digits and . _ ~ / -,
           optionally followed by one #anchor of letters, digits and . _ ~ -.
 
+    # The log viewer has a site block of its own; Caddy refuses to start when
+    # one name has two site blocks.
+    - name: Check the domain of the log viewer
+      tags: [always]
+      vars:
+        other_domains: >-
+          {{ [backend_domain, frontend_domain, shorturl_domain]
+             + ([augustiner_domain] if augustiner_domain is defined else [])
+             + (augustiner_alias_domains | default([]))
+             + (augustiner_redirects | default({}) | list) }}
+      ansible.builtin.assert:
+        that:
+          - logging_domain is defined
+          - logging_domain is string
+          - logging_domain not in other_domains
+        fail_msg: >-
+          logging_domain must name the log viewer on a host name of its own
+          (for example logging_domain=logs.example.org), and that name may be
+          none of the other domains of the stage. Point its DNS record at the
+          host before the deploy.
+
     - name: Refuse placeholder or malformed inventory values
       tags: [always]
       ansible.builtin.assert:
@@ -128,7 +149,7 @@
         fail_msg: "'{{ item }}' is not a usable public hostname (placeholder or malformed)."
         quiet: true
       loop: >-
-        {{ [backend_domain, frontend_domain, shorturl_domain]
+        {{ [backend_domain, frontend_domain, shorturl_domain, logging_domain]
            + ([augustiner_domain] if augustiner_domain is defined else [])
            + (augustiner_alias_domains | default([]))
            + (augustiner_redirects | default({}) | list) }}

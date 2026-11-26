@@ -76,26 +76,6 @@ http://127.0.0.1:2020 {
 	}
 }
 
-# Log viewer: protected by basic auth and, when the inventory variable
-# logging_allowed_cidrs lists networks, reachable from those networks only.
-# The route block keeps the written order, so the network check answers 403
-# before the credentials are examined and a client outside the allowed
-# networks cannot tell a wrong password from a right one.
-(logging_viewer) {
-	handle /logging/dozzle* {
-		route {
-{% if logging_allowed_cidrs | default([]) %}
-			@outside_allowlist not remote_ip {{ logging_allowed_cidrs | join(' ') }}
-			respond @outside_allowlist 403
-{% endif %}
-			basic_auth {
-				{$LOGGING_USER} {$LOGGING_PASSWORD_HASH}
-			}
-			reverse_proxy 127.0.0.1:8081
-		}
-	}
-}
-
 # Backend: prefix stripped, backend runs with root_path="/api".
 # API answers carry personal data (user lists, new passwords) and must
 # never be stored by a browser or proxy; header_down replaces any value
@@ -136,7 +116,6 @@ http://127.0.0.1:2020 {
 	import security_headers
 	import request_body_limit
 	import access_log
-	import logging_viewer
 	import go_redirect
 	import backend_api
 	# Frontend: catch-all fallback.
@@ -149,7 +128,6 @@ http://127.0.0.1:2020 {
 	import security_headers
 	import request_body_limit
 	import access_log
-	import logging_viewer
 	import go_redirect
 	import backend_api
 	# Dedicated backend domain -- no frontend fallback here, it lives on
@@ -165,6 +143,28 @@ http://127.0.0.1:2020 {
 	import frontend_app
 }
 {% endif %}
+
+# Log viewer on a name of its own: protected by basic auth and, when the
+# inventory variable logging_allowed_cidrs lists networks, reachable from those
+# networks only. The route block keeps the written order, so the network check
+# answers 403 before the credentials are examined and a client outside the
+# allowed networks cannot tell a wrong password from a right one.
+{{ logging_domain | mandatory }} {
+	import security_headers
+	import access_log
+	route {
+{% if logging_allowed_cidrs | default([]) %}
+		@outside_allowlist not remote_ip {{ logging_allowed_cidrs | join(' ') }}
+		respond @outside_allowlist 403
+{% endif %}
+		basic_auth {
+			{$LOGGING_USER} {$LOGGING_PASSWORD_HASH}
+		}
+		reverse_proxy 127.0.0.1:8081 {
+			header_down -Server
+		}
+	}
+}
 
 # Short-URL redirect service on its own subdomain. `rewrite` prepends "/go" to
 # every request before it reaches the same backend port as above -- the
@@ -238,10 +238,10 @@ http://127.0.0.1:2020 {
 		@old_page path_regexp old_page ^/pages/([a-z-]+)\.(en|it|fr|es)\.html$
 		redir @old_page /{re.old_page.2}/pages/{re.old_page.1}.html permanent
 
-		# Allowlist: only what the repository's own live package
-		# (tools/paket.py) contains. Tooling, notes, the .git directory and
-		# the browser-side administration stay unreachable, including
-		# anything added to the repository later.
+		# Allowlist: only the paths of the published website. Everything
+		# else in the repository, the .git directory and the browser-side
+		# administration stay unreachable, including anything added to the
+		# repository later.
 		@outside_package not path / /index.html /favicon.ico /site.webmanifest /sw.js /offline.html /sitemap.xml /robots.txt /en /it /fr /es /pages/* /en/* /it/* /fr/* /es/* /css/* /js/* /assets/* /data/*
 		respond @outside_package 404
 		@admin_only path_regexp (?i)^/(?:css/admin|js/admin|pages/[^/]*-verwaltung\.html$)
