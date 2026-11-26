@@ -1,8 +1,12 @@
 #!/bin/sh
-# Mirrors one branch of the public static website repository of the
+# Mirrors one branch of the private static website repository of the
 # Augustinian church into AUG_TARGET. augustiner-pull.timer starts it every few
 # minutes in a short-lived container (augustiner-pull.container); Caddy serves
 # the result from a read-only mount.
+#
+# Access is read-only over SSH: the repository owner has registered the public
+# half of AUG_SSH_KEY as a deploy key without write access, and the server must
+# present one of the host keys in AUG_KNOWN_HOSTS (no trust on first use).
 #
 # The repository is maintained by a third party, so its content is not
 # trusted:
@@ -14,20 +18,32 @@
 # - The copy always equals the remote branch (fetch + reset --hard): a
 #   force-push upstream is followed instead of blocking every later update.
 #   Nothing writes into the copy except this script.
+# - The copy always fetches from AUG_REPO_URL, also after the repository has
+#   moved: the remote of an existing copy is reset on every run.
 #
-# Environment: AUG_REPO_URL, AUG_TARGET, AUG_MIN_FREE_MB (required),
-# AUG_BRANCH (default: main).
+# Environment: AUG_REPO_URL, AUG_TARGET, AUG_MIN_FREE_MB, AUG_SSH_KEY,
+# AUG_KNOWN_HOSTS (required), AUG_BRANCH (default: main).
 set -eu
 
 : "${AUG_REPO_URL:?AUG_REPO_URL is not set}"
 : "${AUG_TARGET:?AUG_TARGET is not set}"
 : "${AUG_MIN_FREE_MB:?AUG_MIN_FREE_MB is not set}"
+: "${AUG_SSH_KEY:?AUG_SSH_KEY is not set}"
+: "${AUG_KNOWN_HOSTS:?AUG_KNOWN_HOSTS is not set}"
 branch="${AUG_BRANCH:-main}"
 parent=$(dirname "$AUG_TARGET")
 
 fail() {
 	printf 'augustiner-pull: %s\n' "$*" >&2
 	exit 1
+}
+
+# A missing key would otherwise only surface as a vague "Permission denied"
+# from GitHub.
+require_readable() {
+	for file in "$AUG_SSH_KEY" "$AUG_KNOWN_HOSTS"; do
+		[ -r "$file" ] || fail "cannot read ${file}"
+	done
 }
 
 require_free_space() {
@@ -57,8 +73,10 @@ first_clone() {
 }
 
 update() {
-	# Re-applied on every run, in case the copy was created by other means.
+	# Both re-applied on every run, in case the copy was created by other
+	# means or the repository has moved.
 	git -C "$AUG_TARGET" config core.symlinks false
+	git -C "$AUG_TARGET" remote set-url origin "$AUG_REPO_URL"
 	before=$(git -C "$AUG_TARGET" rev-parse HEAD)
 	git -C "$AUG_TARGET" fetch --quiet --prune origin "$branch"
 	after=$(git -C "$AUG_TARGET" rev-parse FETCH_HEAD)
@@ -71,7 +89,10 @@ update() {
 	echo "updated $(git -C "$AUG_TARGET" rev-parse --short "$before") -> $(git -C "$AUG_TARGET" rev-parse --short HEAD)"
 }
 
+require_readable
 require_free_space
+# BatchMode: fail instead of waiting for a passphrase or password prompt.
+export GIT_SSH_COMMAND="ssh -i '${AUG_SSH_KEY}' -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile='${AUG_KNOWN_HOSTS}'"
 if [ ! -d "$AUG_TARGET/.git" ]; then
 	first_clone
 	exit 0

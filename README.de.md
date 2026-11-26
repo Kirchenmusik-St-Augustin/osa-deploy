@@ -38,8 +38,9 @@ und als vollständigen Commit-SHA. Dieses Repository baut kein Image und
 klont kein Anwendungs-Repository auf den Host; es verteilt Konfiguration und
 Secrets und stellt sicher, dass die richtigen Images laufen. Die einzige
 Ausnahme ist die optionale statische Website der Augustinerkirche: Wo das
-Inventar sie einschaltet, spiegelt ein kleiner Container dieses öffentliche
-Fremd-Repository auf den Host (Abschnitt 2.4).
+Inventar sie einschaltet, spiegelt ein kleiner Container dieses private
+Fremd-Repository mit einem Deploy-Key ohne Schreibrecht auf den Host
+(Abschnitt 2.4).
 
 ### 2.2 Laufzeit-Aufbau
 
@@ -61,12 +62,12 @@ Services übersetzt.
      ▼
   Caddy (Host-Netzwerk)
      └─ einteilung.hochamt.at
-          ├─ /logging/dozzle*  → 127.0.0.1:8081 → Dozzle (Basic Auth)
           ├─ /go/*             → Redirect → go.hochamt.at
           ├─ /api, /api/*      → 127.0.0.1:21000 → osa-backend-pod (Präfix entfernt)
           └─ alles andere      → 127.0.0.1:21001 → osa-frontend-pod
      └─ go.hochamt.at (Kurz-URLs) → 127.0.0.1:21000 (mit Präfix /go)
-     └─ www.augustiner.at.schimpl.cc → Dateien aus ~/data/augustiner/site (nur lesend)
+     └─ logging_domain (Log-Viewer) → 127.0.0.1:8081 → Dozzle (Basic Auth)
+     └─ augustiner_domain (optional) → Dateien aus ~/data/augustiner/site (nur lesend)
   ```
 - Die Anwendungs-Container nutzen `Image=…:latest` und `AutoUpdate=registry`:
   Podmans eigener `podman-auto-update.timer` zieht und startet sie täglich neu,
@@ -77,8 +78,11 @@ Services übersetzt.
 - Dozzle ist ein schreibgeschützter Log-Viewer hinter Basic Auth. Der
   wöchentliche `podman-prune.timer` führt `podman system prune -a -f` auf dem
   Host aus.
-- Optional: die statische Website der Augustinerkirche, ein öffentliches
-  Fremd-Repository. `augustiner-pull.timer` startet alle fünf Minuten den
+- Optional: die statische Website der Augustinerkirche, ein privates
+  Fremd-Repository, gelesen über SSH mit einem Deploy-Key ohne Schreibrecht
+  (`secrets/augustiner-pull.key`, Abschnitt 7.1) und nur gegen die in
+  `quadlets/augustiner/known_hosts` hinterlegten GitHub-Hostkeys.
+  `augustiner-pull.timer` startet alle fünf Minuten den
   kurzlebigen Container `augustiner-pull`; er spiegelt den Branch `main` nach
   `~/data/augustiner/site` (`git fetch` und `reset --hard`, damit auch ein
   Force-Push im Original übernommen wird). Caddy liefert dieses Verzeichnis
@@ -115,9 +119,10 @@ osa-access/sites/<stage>/
 ```
 
 `inventory.ini` enthält `app_environment`, `backend_domain`,
-`frontend_domain`, `shorturl_domain` und `acme_email`. Die Domains sind
-unabhängig voneinander (Backend und Frontend können eine teilen, wie auf
-Production, oder nicht) und werden beim Deploy in die Caddyfile und in die
+`frontend_domain`, `shorturl_domain`, `logging_domain` und `acme_email`. Die
+Domains sind unabhängig voneinander (Backend und Frontend können eine teilen,
+wie auf Production, oder nicht; der Log-Viewer braucht einen eigenen Namen) und
+werden beim Deploy in die Caddyfile und in die
 `*.env.j2`-Dateien gerendert. Jede Stage hält ihre Datenbank unter
 `~/data/osa/<stage>/postgres` auf ihrem Host. `development` ist hier bewusst
 keine Stage: Die lokale Entwicklung läuft auf dem Rechner der Entwicklerin
@@ -125,10 +130,14 @@ bzw. des Entwicklers (Kapitel 6).
 
 Optional, für die statische Website: `augustiner_domain` (ihre Hauptdomain),
 `augustiner_alias_domains` (eine JSON-Liste weiterer Namen, die alle dauerhaft
-auf die Hauptdomain umleiten) und `augustiner_noindex` (Standard `true`,
-sendet `X-Robots-Tag: noindex`, solange eine Übergangs-Domain läuft). Einen
-Alias erst eintragen, wenn sein DNS-Eintrag auf den Host zeigt: Sonst bekommt
-Caddy kein Zertifikat dafür und versucht es immer wieder, was das Log füllt.
+auf die Hauptdomain umleiten, der Pfad bleibt erhalten), `augustiner_redirects`
+(eine JSON-Zuordnung weiterer Namen zu einer Seite der Website, wahlweise mit
+`#Anker`, zum Beispiel `{"example.net": "/pages/a.html#part"}`; jeder Name
+leitet vorübergehend (302) auf diese feste Adresse der Hauptdomain um) und `augustiner_noindex` (Standard
+`true`, sendet `X-Robots-Tag: noindex`, solange eine Übergangs-Domain läuft).
+Einen Alias oder eine Weiterleitung erst eintragen, wenn der DNS-Eintrag auf
+den Host zeigt: Sonst bekommt Caddy kein Zertifikat dafür und versucht es
+immer wieder, was das Log füllt.
 `augustiner_domain` entfernen und deployen nimmt die Website und ihren Timer
 wieder weg.
 
@@ -146,8 +155,9 @@ systemctl --user list-units --failed
 journalctl --user -u osa-backend-pod -n 100
 ```
 
-Der Log-Viewer liegt unter `https://einteilung.hochamt.at/logging/dozzle`
-(Basic Auth, das Login steht in `secrets/caddy.env`). Die Units heißen
+Der Log-Viewer liegt unter `https://<logging_domain>`, auf Production
+`https://dozzle.augustinerkirche.at` (Basic Auth, das Login steht in
+`secrets/caddy.env`). Die Units heißen
 `caddy.service`, `osa-backend-pod.service`, `osa-frontend-pod.service`,
 `logging-dozzle.service`, `podman-auto-update.timer` und `podman-prune.timer`,
 dazu `augustiner-pull.timer`, wo die statische Website eingeschaltet ist.
@@ -255,8 +265,8 @@ dem Backup, das direkt vor dem Wechsel gemacht wurde.
   | openSUSE Leap 16.0 | 5.4.2 |
 
   Zu alt: Debian 12, Ubuntu 24.04, RHEL-Familie 9.x, openSUSE Leap 15.x.
-- **DNS** von `backend_domain`, `frontend_domain` und `shorturl_domain` muss
-  vor dem ersten `./osa deploy` auf den Server zeigen. Caddy holt die
+- **DNS** von `backend_domain`, `frontend_domain`, `shorturl_domain` und
+  `logging_domain` muss vor dem ersten `./osa deploy` auf den Server zeigen. Caddy holt die
   Zertifikate selbst bei Let's Encrypt und braucht dafür Port 80; eine Domain,
   die noch nicht auflöst, lässt die Zertifikatsausstellung scheitern und
   zählt gegen die Rate-Limits von Let's Encrypt. Prüfen mit
@@ -548,6 +558,7 @@ zuerst entschlüsselt. Später bearbeiten mit
 | `osa-backend-pg.env` | Bootstrap-Rolle von PostgreSQL |
 | `osa-backend-valkey.env` | `VALKEY_PASSWORD` |
 | `osa-frontend.env.j2` | Laufzeitkonfiguration des Frontends |
+| `augustiner-pull.key` | nur mit `augustiner_domain`: privater Teil des Deploy-Keys (nur lesend) für das Repository der statischen Website |
 
 Für jede Stage ein frisches Passwort erzeugen und nie eines einer anderen
 Stage wiederverwenden: `python3 -c "import secrets;
@@ -555,11 +566,26 @@ print(secrets.token_urlsafe(32))"`. Das Valkey-Passwort muss in
 `osa-backend.env.j2` und `osa-backend-valkey.env` identisch sein. Der
 Caddy-Hash wird interaktiv erzeugt, damit das Passwort nie in der
 Shell-History landet: `podman run -it --rm docker.io/library/caddy:2.11 caddy
-hash-password --algorithm bcrypt --bcrypt-cost 14`. Der Log-Viewer hält den
-Podman-API-Socket, sein Login ist also so sensibel wie die Secrets der Stage.
+hash-password --algorithm bcrypt --bcrypt-cost 12`. Jeder Fehlversuch kostet
+Caddy einen bcrypt-Vergleich; Cost 12 hält das auf einem kleinen Host bei
+Bruchteilen einer Sekunde. Der Log-Viewer hält den Podman-API-Socket, sein
+Login ist also so sensibel wie die Secrets der Stage.
 Die optionale Inventar-Variable `logging_allowed_cidrs=["203.0.113.0/24"]`
 beantwortet Clients außerhalb der Liste mit `403`, bevor ein Zugangsdatum
 geprüft wird.
+
+**Deploy-Key der statischen Website.** Der Owner des Repositorys trägt den
+öffentlichen Teil als Deploy-Key ohne Schreibrecht ein; der private Teil ist
+`augustiner-pull.key`, den das Deploy nach `~/.env` kopiert (eine Stage mit
+`augustiner_domain` ohne diese Datei stoppt das Deploy). Ein Key darf mehreren
+Stages dienen, weil GitHub einen Deploy-Key an das Repository bindet, nicht an
+einen Host. Rotieren: `ssh-keygen -t ed25519 -N '' -f augustiner-pull.key` in
+einem leeren Verzeichnis, den öffentlichen Teil vom Owner tauschen lassen, den
+privaten nach `secrets/` kopieren,
+`./osa vault <stage> encrypt secrets/augustiner-pull.key`,
+`./osa deploy <stage>`, die Klartext-Kopie löschen, dann auf dem Host mit
+`systemctl --user start augustiner-pull.service` und
+`journalctl --user -u augustiner-pull -n 5` prüfen.
 
 **Datenbankrollen.** `POSTGRES_USER` (`osa`) ist die Bootstrap-Rolle des
 Clusters: immer Superuser, nur für Administration. Backend und Worker

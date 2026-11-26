@@ -38,8 +38,8 @@ and as the full commit SHA. This repository builds no image and clones no
 application repository onto the host; it distributes configuration and
 secrets and makes sure the right images run. The one exception is the
 optional static website of the Augustinian church: where the inventory
-enables it, a small container mirrors that public third-party repository onto
-the host (section 2.4).
+enables it, a small container mirrors that private third-party repository
+onto the host with a read-only deploy key (section 2.4).
 
 ### 2.2 Runtime layout
 
@@ -60,12 +60,12 @@ runs containers. Containers are described as systemd Quadlets
      ▼
   Caddy (host network)
      └─ einteilung.hochamt.at
-          ├─ /logging/dozzle*  → 127.0.0.1:8081 → Dozzle (basic auth)
           ├─ /go/*             → redirect → go.hochamt.at
           ├─ /api, /api/*      → 127.0.0.1:21000 → osa-backend-pod (prefix stripped)
           └─ everything else   → 127.0.0.1:21001 → osa-frontend-pod
      └─ go.hochamt.at (short URLs) → 127.0.0.1:21000 (with /go prefix)
-     └─ www.augustiner.at.schimpl.cc → files of ~/data/augustiner/site (read-only)
+     └─ logging_domain (log viewer) → 127.0.0.1:8081 → Dozzle (basic auth)
+     └─ augustiner_domain (optional) → files of ~/data/augustiner/site (read-only)
   ```
 - The application containers use `Image=…:latest` and `AutoUpdate=registry`:
   Podman's own `podman-auto-update.timer` pulls and restarts them daily,
@@ -74,8 +74,11 @@ runs containers. Containers are described as systemd Quadlets
   configuration, for an immediate deploy and to pin a release.
 - Dozzle is a read-only log viewer behind basic auth. The weekly
   `podman-prune.timer` runs `podman system prune -a -f` on the host.
-- Optional: the static website of the Augustinian church, a public
-  third-party repository. `augustiner-pull.timer` starts the short-lived
+- Optional: the static website of the Augustinian church, a private
+  third-party repository, read over SSH with a deploy key that has no write
+  access (`secrets/augustiner-pull.key`, section 7.1) and only against the
+  GitHub host keys pinned in `quadlets/augustiner/known_hosts`.
+  `augustiner-pull.timer` starts the short-lived
   `augustiner-pull` container every five minutes; it mirrors the branch `main`
   into `~/data/augustiner/site` (`git fetch` and `reset --hard`, so a
   force-push upstream is followed). Caddy serves that directory read-only and
@@ -110,19 +113,22 @@ osa-access/sites/<stage>/
 ```
 
 `inventory.ini` carries `app_environment`, `backend_domain`,
-`frontend_domain`, `shorturl_domain` and `acme_email`. The domains are
-independent (backend and frontend may share one, as on production, or not) and
-are rendered into the Caddyfile and into the `*.env.j2` files at deploy time.
+`frontend_domain`, `shorturl_domain`, `logging_domain` and `acme_email`. The
+domains are independent (backend and frontend may share one, as on production,
+or not; the log viewer needs a name of its own) and are rendered into the Caddyfile and into the `*.env.j2` files at deploy time.
 Each stage keeps its database under `~/data/osa/<stage>/postgres` on its
 host. `development` is deliberately not a stage here: local development runs
 on the developer's machine (chapter 6).
 
 Optional, for the static website: `augustiner_domain` (its main domain),
 `augustiner_alias_domains` (a JSON list of further names, each redirected
-permanently to the main domain) and `augustiner_noindex` (default `true`,
-sends `X-Robots-Tag: noindex` while an interim domain is in use). Add an alias
-only once its DNS record points at the host: otherwise Caddy gets no
-certificate for it and keeps retrying, which fills the log. Removing
+permanently to the main domain, path kept), `augustiner_redirects` (a JSON
+mapping of further names to one page of the site, optionally with an
+`#anchor`, for example `{"example.net": "/pages/a.html#part"}`; each name
+redirects temporarily (302) to that fixed address on the main domain) and `augustiner_noindex` (default
+`true`, sends `X-Robots-Tag: noindex` while an interim domain is in use). Add
+an alias or a redirect only once its DNS record points at the host: otherwise
+Caddy gets no certificate for it and keeps retrying, which fills the log. Removing
 `augustiner_domain` and deploying takes the site and its timer away again.
 
 Only `production` is deployed today. `test` and `qa` are created the same way
@@ -139,8 +145,9 @@ systemctl --user list-units --failed
 journalctl --user -u osa-backend-pod -n 100
 ```
 
-The log viewer is at `https://einteilung.hochamt.at/logging/dozzle` (basic
-auth, the login is in `secrets/caddy.env`). The units are `caddy.service`,
+The log viewer is at `https://<logging_domain>`, on production
+`https://dozzle.augustinerkirche.at` (basic auth, the login is in
+`secrets/caddy.env`). The units are `caddy.service`,
 `osa-backend-pod.service`, `osa-frontend-pod.service`,
 `logging-dozzle.service`, `podman-auto-update.timer` and `podman-prune.timer`,
 plus `augustiner-pull.timer` where the static website is enabled. Its last
@@ -243,8 +250,8 @@ use `--force` with the backup taken right before the bump.
   | openSUSE Leap 16.0 | 5.4.2 |
 
   Too old: Debian 12, Ubuntu 24.04, RHEL-family 9.x, openSUSE Leap 15.x.
-- **DNS** of `backend_domain`, `frontend_domain` and `shorturl_domain` must
-  point at the server before the first `./osa deploy`. Caddy requests the
+- **DNS** of `backend_domain`, `frontend_domain`, `shorturl_domain` and
+  `logging_domain` must point at the server before the first `./osa deploy`. Caddy requests the
   certificates from Let's Encrypt by itself and needs port 80 to reach the
   server; a domain that does not resolve yet makes certificate issuance fail
   and counts against the rate limits of Let's Encrypt. Check with
@@ -521,6 +528,7 @@ decrypts first. Edit later with `./osa vault <stage> edit secrets/<file>`.
 | `osa-backend-pg.env` | bootstrap role of PostgreSQL |
 | `osa-backend-valkey.env` | `VALKEY_PASSWORD` |
 | `osa-frontend.env.j2` | runtime configuration of the frontend |
+| `augustiner-pull.key` | only with `augustiner_domain`: private half of the read-only deploy key of the static website's repository |
 
 Generate a fresh password for every stage and never reuse one of another
 stage: `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`. The
@@ -528,10 +536,23 @@ Valkey password must be identical in `osa-backend.env.j2` and
 `osa-backend-valkey.env`. The Caddy hash is made interactively so the password
 never reaches the shell history: `podman run -it --rm
 docker.io/library/caddy:2.11 caddy hash-password --algorithm bcrypt
---bcrypt-cost 14`. The log viewer holds the Podman API socket, so its login is
-as sensitive as the stage's secrets. The optional inventory variable
+--bcrypt-cost 12`. Every failed attempt costs Caddy one bcrypt comparison; cost
+12 keeps that at a fraction of a second on a small host. The log viewer holds
+the Podman API socket, so its login is as sensitive as the stage's secrets. The optional inventory variable
 `logging_allowed_cidrs=["203.0.113.0/24"]` answers clients outside the list
 with `403` before any credential is examined.
+
+**Deploy key of the static website.** The repository owner registers the
+public half as a deploy key without write access; the private half is
+`augustiner-pull.key`, which the deploy copies to `~/.env` (a stage with
+`augustiner_domain` and without the file stops the deploy). One key may serve
+several stages, since GitHub binds a deploy key to the repository, not to a
+host. Rotate: `ssh-keygen -t ed25519 -N '' -f augustiner-pull.key` in an
+empty directory, have the owner swap the public half, copy the private half
+to `secrets/`, `./osa vault <stage> encrypt secrets/augustiner-pull.key`,
+`./osa deploy <stage>`, delete the plain copy, then check with
+`systemctl --user start augustiner-pull.service` and
+`journalctl --user -u augustiner-pull -n 5` on the host.
 
 **Database roles.** `POSTGRES_USER` (`osa`) is the cluster bootstrap role:
 always a superuser, for administration only. The backend and the worker

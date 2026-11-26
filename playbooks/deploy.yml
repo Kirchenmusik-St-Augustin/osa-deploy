@@ -9,8 +9,9 @@
 # podman package but is not enabled by default).
 # Optional, per stage: when the inventory sets augustiner_domain, Caddy also
 # serves the static website of the Augustinian church, which the
-# augustiner-pull.timer mirrors from its public repository (see
-# quadlets/augustiner/pull.sh).
+# augustiner-pull.timer mirrors from its private repository with a read-only
+# deploy key (see quadlets/augustiner/pull.sh), plus its optional alias and
+# redirect names.
 #
 # Usage (the ./osa wrapper supplies the inventory, osa_site_dir and the vault
 # password file; run ./osa check <stage> for a dry run, ./osa deploy <stage>
@@ -85,13 +86,19 @@
           osa-deploy).
 
     # Runs before the host name check below, which needs the alias list to
-    # be a list. Caddy refuses to start when one name has two site blocks,
-    # and an alias without the main domain would redirect nowhere.
+    # be a list and the redirects to be a mapping. Caddy refuses to start
+    # when one name has two site blocks, and an alias or a redirect without
+    # the main domain would lead nowhere. A target path is written into the
+    # Caddyfile as it is, so it may only hold plain path characters and an
+    # optional #anchor (inside a token, # does not start a Caddyfile comment).
     - name: Check the domains of the static website
       tags: [always]
-      when: augustiner_domain is defined or augustiner_alias_domains is defined
+      when: >-
+        augustiner_domain is defined or augustiner_alias_domains is defined
+        or augustiner_redirects is defined
       vars:
         aliases: "{{ augustiner_alias_domains | default([]) }}"
+        redirects: "{{ augustiner_redirects | default({}) }}"
         taken: "{{ [backend_domain, frontend_domain, shorturl_domain] + ([augustiner_domain] if augustiner_domain is defined else []) }}"
       ansible.builtin.assert:
         that:
@@ -99,11 +106,39 @@
           - aliases is sequence and aliases is not string
           - aliases | unique | length == aliases | length
           - aliases | intersect(taken) | length == 0
+          - redirects is mapping
+          - redirects | list | intersect(taken + aliases) | length == 0
+          - redirects.values() | select('string') | select('match', '^/[A-Za-z0-9._~/-]*(#[A-Za-z0-9._~-]+)?$') | list | length == redirects | length
         fail_msg: >-
-          augustiner_alias_domains needs augustiner_domain, must be a list
-          (for example ["example.org", "www.example.net"]) and may name each
-          host only once and none of augustiner_domain, backend_domain,
-          frontend_domain or shorturl_domain.
+          augustiner_alias_domains and augustiner_redirects need
+          augustiner_domain. The aliases must be a list (for example
+          ["example.org", "www.example.net"]), the redirects a mapping of
+          host to target path (for example {"example.net": "/pages/a.html"}).
+          Each host may appear only once and be none of augustiner_domain,
+          backend_domain, frontend_domain or shorturl_domain; a target path
+          starts with / and holds only letters, digits and . _ ~ / -,
+          optionally followed by one #anchor of letters, digits and . _ ~ -.
+
+    # The log viewer has a site block of its own; Caddy refuses to start when
+    # one name has two site blocks.
+    - name: Check the domain of the log viewer
+      tags: [always]
+      vars:
+        other_domains: >-
+          {{ [backend_domain, frontend_domain, shorturl_domain]
+             + ([augustiner_domain] if augustiner_domain is defined else [])
+             + (augustiner_alias_domains | default([]))
+             + (augustiner_redirects | default({}) | list) }}
+      ansible.builtin.assert:
+        that:
+          - logging_domain is defined
+          - logging_domain is string
+          - logging_domain not in other_domains
+        fail_msg: >-
+          logging_domain must name the log viewer on a host name of its own
+          (for example logging_domain=logs.example.org), and that name may be
+          none of the other domains of the stage. Point its DNS record at the
+          host before the deploy.
 
     - name: Refuse placeholder or malformed inventory values
       tags: [always]
@@ -114,9 +149,25 @@
         fail_msg: "'{{ item }}' is not a usable public hostname (placeholder or malformed)."
         quiet: true
       loop: >-
-        {{ [backend_domain, frontend_domain, shorturl_domain]
+        {{ [backend_domain, frontend_domain, shorturl_domain, logging_domain]
            + ([augustiner_domain] if augustiner_domain is defined else [])
-           + (augustiner_alias_domains | default([])) }}
+           + (augustiner_alias_domains | default([]))
+           + (augustiner_redirects | default({}) | list) }}
+
+    # The website repository is private. Without its deploy key every mirror
+    # run would fail with a bare "Permission denied (publickey)", and a fresh
+    # stage would stay without the site; stop before anything changes.
+    - name: Require the deploy key of the static website
+      tags: [always]
+      when: augustiner_domain is defined
+      ansible.builtin.assert:
+        that: (local_secrets_path ~ '/augustiner-pull.key') is file
+        fail_msg: >-
+          augustiner_domain is set, but {{ local_secrets_path }}/augustiner-pull.key
+          is missing. The website repository is private: put the private half
+          of its read-only deploy key there and encrypt it with
+          ./osa vault <stage> encrypt secrets/augustiner-pull.key.
+        quiet: true
 
     - name: Create the directory structure
       tags: [always]
@@ -161,13 +212,16 @@
         podman unshare sh -c 'chown -R 999:999 "$0" && chmod 700 "$0"'
         {{ ansible_user_dir }}/data/osa/{{ app_environment }}/postgres
 
-    - name: "Find static *.env files in the secrets directory of the stage"
+    # *.key: private SSH keys (the deploy key of the static website). They go
+    # through the same encryption check, copy and orphan check as the
+    # environment files.
+    - name: "Find static *.env and *.key files in the secrets directory of the stage"
       tags: [always]
       delegate_to: localhost
       become: no
       ansible.builtin.find:
         paths: "{{ local_secrets_path }}"
-        patterns: "*.env"
+        patterns: ["*.env", "*.key"]
       register: secret_files
 
     - name: "Find templated *.env.j2 files in the secrets directory of the stage"
