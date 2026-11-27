@@ -89,6 +89,24 @@
           APT::Periodic::Unattended-Upgrade "1";
         mode: "0644"
 
+    # A new kernel or C library only takes effect after a restart, and the
+    # updates above arrive between 06:00 and 07:00. The host then restarts
+    # itself the following night at 02:30, and only when an update asked
+    # for it: after the statistics have closed the day (00:05) and before
+    # the database backup (BACKUP_HOUR, 03:00 by default). Every container
+    # is a systemd unit of the lingering "service" user and comes back on
+    # its own. Later files in apt.conf.d override Debian's commented
+    # defaults in 50unattended-upgrades.
+    - name: Restart at night when an update requires it (Debian)
+      when: ansible_os_family == "Debian"
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/60osa-automatic-reboot
+        content: |
+          Unattended-Upgrade::Automatic-Reboot "true";
+          Unattended-Upgrade::Automatic-Reboot-WithUsers "true";
+          Unattended-Upgrade::Automatic-Reboot-Time "02:30";
+        mode: "0644"
+
     - name: Install core packages (RedHat)
       when: ansible_os_family == "RedHat"
       block:

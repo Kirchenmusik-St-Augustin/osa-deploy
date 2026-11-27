@@ -341,7 +341,9 @@ ab, **startet zwischendurch neu** (nur wenn das Upgrade es verlangt), sperrt die
 ratenbegrenzt) und härtet SSH am Ende (nur Key-Login, kein Root-Login, drei
 Versuche, kein X11). Es schlägt fehl, wenn eine Datei unter
 `/etc/ssh/sshd_config.d/` diese Einstellungen überschreibt. Tägliche
-automatische Sicherheitsupdates werden eingeschaltet. Das Journal behält
+automatische Sicherheitsupdates werden eingeschaltet; verlangt eines einen
+Neustart (ein neuer Kernel), startet der Host in der folgenden Nacht um 02:30
+neu, und alle Container kommen von selbst wieder. Das Journal behält
 höchstens 14 Tage, weil es die Access-Logs mit vollen Client-Adressen enthält
 (die Datenschutzerklärung der statischen Website nennt diese Grenze). Vor dem ersten Lauf
 einmal von Hand verbinden (`ssh service@<host>`) und den Host-Fingerprint
