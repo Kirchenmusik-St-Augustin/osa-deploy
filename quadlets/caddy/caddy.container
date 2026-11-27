@@ -64,6 +64,11 @@ Volume=%h/.config/containers/systemd/osa/infrastructure/caddy/Caddyfile:/etc/cad
 # stage (an empty directory where the inventory does not enable the site),
 # so this file stays the same on every stage.
 Volume=%h/data/augustiner:/srv/augustiner:ro,z
+# Visitor statistics of that website (quadlets/augustiner-stats/), likewise on
+# every stage: Caddy writes the raw log the statistics jobs read, and serves
+# the pages they write, read-only.
+Volume=%h/data/augustiner-logs:/var/log/augustiner:rw,z
+Volume=%h/data/augustiner-stats/www:/srv/augustiner-stats:ro,z
 
 # Everything else lives in the named volumes.
 Volume=caddy-data.volume:/data

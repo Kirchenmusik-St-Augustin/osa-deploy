@@ -1,4 +1,4 @@
-"""Run the Caddyfile template and single deploy.yml tasks through Ansible.
+"""Run the templates and single deploy.yml tasks through Ansible.
 
 The tests see exactly what a deploy renders and asserts, without a host.
 """
@@ -30,8 +30,9 @@ def _ansible_env(tmp_path: Path) -> dict[str, str]:
     }
 
 
-def render_caddyfile(tmp_path: Path, template: Path, **site: object) -> str:
-    destination = tmp_path / "Caddyfile"
+def render_template(tmp_path: Path, template: Path, **site: object) -> str:
+    """Renders a template of the repository with the OSA domains plus site."""
+    destination = tmp_path / template.name.removesuffix(".j2")
     variables = tmp_path / "vars.json"
     variables.write_text(json.dumps({**OSA_DOMAINS, **site}), encoding="utf-8")
     result = subprocess.run(

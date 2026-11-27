@@ -11,7 +11,9 @@
 # serves the static website of the Augustinian church, which the
 # augustiner-pull.timer mirrors from its private repository with a read-only
 # deploy key (see quadlets/augustiner/pull.sh), plus its optional alias and
-# redirect names.
+# redirect names. When it also sets augustiner_stats_domain, hourly jobs count
+# the visits of that website and Caddy serves the result behind the login of
+# the log viewer (see quadlets/augustiner-stats/).
 #
 # Usage (the ./osa wrapper supplies the inventory, osa_site_dir and the vault
 # password file; run ./osa check <stage> for a dry run, ./osa deploy <stage>
@@ -52,11 +54,21 @@
       - { src: backend, dest: "osa/osa-backend" }
       - { src: frontend, dest: "osa/osa-frontend" }
       - { src: augustiner, dest: "augustiner" }
+      - { src: augustiner-stats, dest: "augustiner-stats" }
 
     # Static website of the Augustinian church: mirrored by a short-lived
     # container into this directory, which Caddy mounts read-only. The
     # directory exists on every stage, since caddy.container always mounts it.
     augustiner_data_dir: "{{ ansible_user_dir }}/data/augustiner"
+    # Visitor statistics of that website: Caddy writes the raw log into the
+    # first directory, the statistics jobs keep their data in the second and
+    # write the pages into its www/, which Caddy serves. Both exist on every
+    # stage, since caddy.container always mounts them.
+    augustiner_logs_dir: "{{ ansible_user_dir }}/data/augustiner-logs"
+    augustiner_stats_dir: "{{ ansible_user_dir }}/data/augustiner-stats"
+    augustiner_stats_timers:
+      - augustiner-stats.timer
+      - augustiner-stats-geodata.timer
 
     # The complete stack -- a single set of units.
     managed_units_safe:
@@ -140,6 +152,29 @@
           none of the other domains of the stage. Point its DNS record at the
           host before the deploy.
 
+    # The statistics count the visits of the static website, so they need it;
+    # their pages have a site block of their own like the log viewer.
+    - name: Check the domain of the visitor statistics
+      tags: [always]
+      when: augustiner_stats_domain is defined
+      vars:
+        other_domains: >-
+          {{ [backend_domain, frontend_domain, shorturl_domain, logging_domain]
+             + ([augustiner_domain] if augustiner_domain is defined else [])
+             + (augustiner_alias_domains | default([]))
+             + (augustiner_redirects | default({}) | list) }}
+      ansible.builtin.assert:
+        that:
+          - augustiner_domain is defined
+          - augustiner_stats_domain is string
+          - augustiner_stats_domain not in other_domains
+        fail_msg: >-
+          augustiner_stats_domain needs augustiner_domain, since the statistics
+          count the visits of the static website, and must name a host of its
+          own (for example augustiner_stats_domain=stats.example.org) that is
+          none of the other domains of the stage. Point its DNS record at the
+          host before the deploy.
+
     - name: Refuse placeholder or malformed inventory values
       tags: [always]
       ansible.builtin.assert:
@@ -152,7 +187,8 @@
         {{ [backend_domain, frontend_domain, shorturl_domain, logging_domain]
            + ([augustiner_domain] if augustiner_domain is defined else [])
            + (augustiner_alias_domains | default([]))
-           + (augustiner_redirects | default({}) | list) }}
+           + (augustiner_redirects | default({}) | list)
+           + ([augustiner_stats_domain] if augustiner_stats_domain is defined else []) }}
 
     # The website repository is private. Without its deploy key every mirror
     # run would fail with a bare "Permission denied (publickey)", and a fresh
@@ -178,6 +214,9 @@
         - "{{ ansible_user_dir }}/data/osa/{{ app_environment }}/postgres"
         - "{{ ansible_user_dir }}/data/osa/{{ app_environment }}/valkey"
         - "{{ augustiner_data_dir }}"
+        - "{{ augustiner_logs_dir }}"
+        - "{{ augustiner_stats_dir }}"
+        - "{{ augustiner_stats_dir }}/www"
       ansible.builtin.file:
         path: "{{ item }}"
         state: directory
@@ -429,7 +468,26 @@
         mode: "0644"
       register: caddy_config_volume_render
 
-    - name: Copy the native systemd units (podman-prune service and timer, augustiner-pull timer; not Quadlets, separate target path)
+    # The filter of the statistics is passed every name of the website, so it
+    # is rendered, and only where the statistics are switched on: elsewhere
+    # augustiner_domain may be missing. Removed again when they are switched
+    # off; the other statistics units are plain copies on every stage.
+    - name: Render the filter Quadlet of the visitor statistics (names of the website from the inventory)
+      tags: [always]
+      when: augustiner_stats_domain is defined
+      ansible.builtin.template:
+        src: "{{ local_templates_path }}/augustiner-stats-filter.container.j2"
+        dest: "{{ remote_quadlet_base }}/augustiner-stats/augustiner-stats-filter.container"
+        mode: "0644"
+
+    - name: Remove the filter Quadlet where the visitor statistics are off
+      tags: [always]
+      when: augustiner_stats_domain is not defined
+      ansible.builtin.file:
+        path: "{{ remote_quadlet_base }}/augustiner-stats/augustiner-stats-filter.container"
+        state: absent
+
+    - name: Copy the native systemd units (podman-prune service and timer, augustiner-pull and statistics timers; not Quadlets, separate target path)
       tags: [always]
       ansible.builtin.copy:
         src: "{{ local_timers_path }}/"
@@ -477,6 +535,20 @@
         XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
       ignore_errors: "{{ ansible_check_mode }}"
 
+    # Like the mirror timer above: the statistics run only where the inventory
+    # names their domain, and stop again once it is removed.
+    - name: Enable or disable the timers of the visitor statistics
+      tags: [always]
+      loop: "{{ augustiner_stats_timers }}"
+      ansible.builtin.systemd:
+        scope: user
+        name: "{{ item }}"
+        enabled: "{{ augustiner_stats_domain is defined }}"
+        state: "{{ 'started' if augustiner_stats_domain is defined else 'stopped' }}"
+      environment:
+        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+      ignore_errors: "{{ ansible_check_mode }}"
+
     - name: Look for the copy of the static website
       tags: [always]
       when: augustiner_domain is defined
@@ -493,6 +565,58 @@
       ansible.builtin.systemd:
         scope: user
         name: augustiner-pull.service
+        state: started
+      environment:
+        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+
+    - name: Look for the geodata and the dashboard of the visitor statistics
+      tags: [always]
+      when: augustiner_stats_domain is defined
+      loop:
+        - "{{ augustiner_stats_dir }}/geo/VERSION"
+        - "{{ augustiner_stats_dir }}/www/index.html"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: augustiner_stats_files
+
+    # The monthly timer would leave a new stage without country and network
+    # lists for up to a month. A download that fails only costs those panels
+    # and the data-centre check until the next month: the statistics run
+    # without them, so the deploy goes on with a warning.
+    - name: Fetch the geodata of the visitor statistics on their first deploy
+      tags: [always]
+      when: >-
+        augustiner_stats_domain is defined and not ansible_check_mode
+        and not augustiner_stats_files.results[0].stat.exists
+      ansible.builtin.systemd:
+        scope: user
+        name: augustiner-stats-geodata.service
+        state: started
+      environment:
+        XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"
+      register: augustiner_geodata_first_run
+      ignore_errors: true
+
+    - name: Warn when the first geodata download failed
+      tags: [always]
+      when: augustiner_geodata_first_run is failed
+      ansible.builtin.debug:
+        msg: >-
+          The first download of the DB-IP lists failed. The statistics run
+          without countries and the data-centre check until
+          augustiner-stats-geodata.timer succeeds; see
+          journalctl --user -u augustiner-stats-geodata.service.
+
+    # Fills the dashboard at once instead of at the timer's next full hour; a
+    # failing first run fails the deploy, like the first clone above.
+    - name: Render the visitor statistics on their first deploy
+      tags: [always]
+      when: >-
+        augustiner_stats_domain is defined and not ansible_check_mode
+        and not augustiner_stats_files.results[1].stat.exists
+      ansible.builtin.systemd:
+        scope: user
+        name: augustiner-stats-report.service
         state: started
       environment:
         XDG_RUNTIME_DIR: "{{ xdg_runtime_dir }}"

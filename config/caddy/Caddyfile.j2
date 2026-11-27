@@ -187,6 +187,25 @@ http://127.0.0.1:2020 {
 # augustiner-pull.timer mirrors into ~/data/augustiner/site, mounted read-only.
 # It brings its own content security policy as a <meta> tag in every page, so
 # none of the application snippets above apply here.
+{% if augustiner_stats_domain is defined %}
+# Source of the visitor statistics: every name of the website also writes its
+# requests to a file of their own, in addition to the usual access log above.
+# The statistics jobs (quadlets/augustiner-stats/) read it every hour. Caddy
+# rolls the file by size only; the small size makes it roll often enough that
+# roll_keep_for really removes full addresses after seven days, and roll_keep
+# is high enough never to drop a file sooner.
+(augustiner_log) {
+	log augustiner_statistics {
+		output file /var/log/augustiner/access.log {
+			roll_size 1MiB
+			roll_keep 5000
+			roll_keep_for 168h
+		}
+		format json
+	}
+}
+
+{% endif %}
 (augustiner_headers) {
 	header {
 		# Without includeSubDomains: the stage only answers for this one name.
@@ -204,6 +223,9 @@ http://127.0.0.1:2020 {
 {{ augustiner_domain }} {
 	import augustiner_headers
 	import access_log
+{% if augustiner_stats_domain is defined %}
+	import augustiner_log
+{% endif %}
 {% if augustiner_noindex | default(true) | bool %}
 	# Interim domain: keeps search engines from indexing a copy of the site.
 	header X-Robots-Tag "noindex, nofollow, noarchive"
@@ -260,6 +282,9 @@ http://127.0.0.1:2020 {
 # path and query kept.
 {{ augustiner_alias_domains | join(', ') }} {
 	import access_log
+{% if augustiner_stats_domain is defined %}
+	import augustiner_log
+{% endif %}
 	header -Server
 	redir https://{{ augustiner_domain }}{uri} permanent
 }
@@ -274,9 +299,66 @@ http://127.0.0.1:2020 {
 {% endif %}
 {{ names | map(attribute='key') | join(', ') }} {
 	import access_log
+{% if augustiner_stats_domain is defined %}
+	import augustiner_log
+{% endif %}
 	header -Server
 	redir https://{{ augustiner_domain }}{{ target }} 302
 }
 {% endfor %}
+{% endif %}
+{% if augustiner_stats_domain is defined %}
+
+# Visitor statistics of the website: static pages that the statistics jobs
+# write into ~/data/augustiner-stats/www, mounted read-only. The login is the
+# one of the log viewer (LOGGING_USER and LOGGING_PASSWORD_HASH in caddy.env).
+# The `-Server` deletion defers the whole header block, and deferred headers
+# are lost when basic_auth answers 401 or a file is missing, so handle_errors
+# sets them again.
+(augustiner_stats_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Cross-Origin-Opener-Policy "same-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+		X-Robots-Tag "noindex, nofollow, noarchive"
+		Cache-Control "no-store"
+		-Server
+	}
+}
+
+{{ augustiner_stats_domain }} {
+	import augustiner_stats_headers
+	import access_log
+	encode zstd gzip
+
+	# The dashboard is drawn without any script. Only the two GoAccess
+	# reports need theirs: inline code, templates compiled at runtime
+	# ('unsafe-eval') and the panel names in automatisch.js ('self').
+	@detail path /menschen.html /automatisch.html
+	@overview not path /menschen.html /automatisch.html
+	header @overview Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+	header @detail Content-Security-Policy "default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data:; font-src data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+
+	# The credentials come first, so a request without them learns nothing
+	# but 401, whatever its method or path.
+	route {
+		basic_auth {
+			{$LOGGING_USER} {$LOGGING_PASSWORD_HASH}
+		}
+		@not_read not method GET HEAD
+		respond @not_read 405
+		root * /srv/augustiner-stats
+		file_server
+	}
+
+	handle_errors {
+		import augustiner_stats_headers
+		header Content-Security-Policy "default-src 'none'; frame-ancestors 'none'"
+		respond "{err.status_code} {err.status_text}"
+	}
+}
 {% endif %}
 {% endif %}

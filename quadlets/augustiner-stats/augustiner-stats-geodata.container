@@ -1,0 +1,40 @@
+[Unit]
+Description=Fetch the country and network lists of DB-IP Lite for the visitor statistics
+Wants=network-online.target
+After=network-online.target
+
+# Short-lived: started by augustiner-stats-geodata.timer (systemd-timers/)
+# once a month. No [Install] section, so nothing starts it at boot on its
+# own; deploy.yml enables the timer only on a stage whose inventory sets
+# augustiner_stats_domain. The only statistics job with network access: it
+# reads no log and writes only below geo/.
+[Container]
+ContainerName=augustiner-stats-geodata
+# Pinned to a specific, verified digest like every other infrastructure
+# image; no AutoUpdate=. The same image as the filter.
+Image=docker.io/library/python:3.14-alpine@sha256:76c65fc8c52c4d375e958298d9f66198b8fb6b06416c0e5500bf710c19cbaa77
+Entrypoint=python3
+WorkingDir=/opt/augustiner-stats
+# -E and -s: no PYTHON* variables and no user site directory, only the package
+# mounted below.
+Exec=-E -s -m augustiner_stats geodata --data /data
+
+Environment=TZ=Europe/Vienna
+
+Volume=%h/data/augustiner-stats:/data:rw,z
+Volume=%h/.config/containers/systemd/augustiner-stats:/opt/augustiner-stats:ro,z
+
+ReadOnly=true
+NoNewPrivileges=true
+DropCapability=all
+Mount=type=tmpfs,target=/tmp,tmpfs-mode=1777,noexec
+
+# Converting the lists took 46s and peaked at 132MB on the development host;
+# the lists are streamed, so they only grow slowly. Quadlet 5.4.2 has no
+# native memory key.
+PodmanArgs=--memory=256m
+PidsLimit=64
+
+[Service]
+Type=oneshot
+TimeoutStartSec=15min

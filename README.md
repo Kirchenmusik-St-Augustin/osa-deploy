@@ -66,6 +66,8 @@ runs containers. Containers are described as systemd Quadlets
      └─ go.hochamt.at (short URLs) → 127.0.0.1:21000 (with /go prefix)
      └─ logging_domain (log viewer) → 127.0.0.1:8081 → Dozzle (basic auth)
      └─ augustiner_domain (optional) → files of ~/data/augustiner/site (read-only)
+     └─ augustiner_stats_domain (optional) → files of ~/data/augustiner-stats/www
+                                             (read-only, login of the log viewer)
   ```
 - The application containers use `Image=…:latest` and `AutoUpdate=registry`:
   Podman's own `podman-auto-update.timer` pulls and restarts them daily,
@@ -84,6 +86,21 @@ runs containers. Containers are described as systemd Quadlets
   force-push upstream is followed). Caddy serves that directory read-only and
   only the files the repository's own live package contains. A commit with a
   symbolic link is refused, and no run starts below 2 GB of free disk space.
+- Optional, with the static website: its visitor statistics
+  (`quadlets/augustiner-stats/`). Besides the usual access log, every name of
+  the website writes its requests to `~/data/augustiner-logs/access.log`, and
+  Caddy removes those files after 7 days. Shortly after every full hour
+  `augustiner-stats.timer` starts two short-lived containers without network
+  access: `augustiner-stats-filter` (Python standard library only) separates
+  people from automated access (scanners, search engines, AI crawlers, link
+  previews, tools, clients without JavaScript, data centres), replaces the
+  addresses by pseudonyms with a secret of the month that is deleted once the
+  month is over, and draws the dashboard; `augustiner-stats-report` (GoAccess)
+  adds two detail reports. The days of people are kept for 25 months, those
+  of automated access for 90 days. Once a month `augustiner-stats-geodata.timer`
+  fetches the country and network lists of DB-IP Lite, the only statistics job
+  with network access. Caddy serves the pages from
+  `~/data/augustiner-stats/www` behind the login of the log viewer.
 
 ### 2.3 Container hardening
 
@@ -131,6 +148,12 @@ an alias or a redirect only once its DNS record points at the host: otherwise
 Caddy gets no certificate for it and keeps retrying, which fills the log. Removing
 `augustiner_domain` and deploying takes the site and its timer away again.
 
+Optional, for the visitor statistics of the static website:
+`augustiner_stats_domain` (a host name of its own, needs `augustiner_domain`;
+its DNS record must point at the host before the deploy). Removing it and
+deploying stops the statistics timers; the data collected so far stays in
+`~/data/augustiner-stats`.
+
 Only `production` is deployed today. `test` and `qa` are created the same way
 when a server exists for them (section 4.5).
 
@@ -154,7 +177,11 @@ plus `augustiner-pull.timer` where the static website is enabled. Its last
 runs (`cloned`, `updated`, `unchanged` or the reason for a refusal) show with
 `journalctl --user -u augustiner-pull -n 20`;
 `systemctl --user start augustiner-pull.service` fetches new commits at once
-instead of waiting for the timer.
+instead of waiting for the timer. Where the visitor statistics are enabled,
+`augustiner-stats.timer` and `augustiner-stats-geodata.timer` join them;
+`journalctl --user -u augustiner-stats-filter -u augustiner-stats-report -n 20`
+shows the last runs, and `systemctl --user start augustiner-stats-report.service`
+updates the statistics at once (the filter runs first).
 
 ### 3.2 Restart
 
@@ -522,7 +549,7 @@ decrypts first. Edit later with `./osa vault <stage> edit secrets/<file>`.
 
 | File | Contents |
 |---|---|
-| `caddy.env` | `LOGGING_USER`, `LOGGING_PASSWORD_HASH` (bcrypt) of the log viewer |
+| `caddy.env` | `LOGGING_USER`, `LOGGING_PASSWORD_HASH` (bcrypt) of the log viewer and the visitor statistics |
 | `osa-backend.env.j2` | web and worker environment: database URL, Valkey password, `SECRET_KEY`, mail, schedule |
 | `osa-backend-worker.env` | only the worker: Koofr credentials and backup target |
 | `osa-backend-pg.env` | bootstrap role of PostgreSQL |
@@ -538,7 +565,9 @@ never reaches the shell history: `podman run -it --rm
 docker.io/library/caddy:2.11 caddy hash-password --algorithm bcrypt
 --bcrypt-cost 12`. Every failed attempt costs Caddy one bcrypt comparison; cost
 12 keeps that at a fraction of a second on a small host. The log viewer holds
-the Podman API socket, so its login is as sensitive as the stage's secrets. The optional inventory variable
+the Podman API socket, so its login is as sensitive as the stage's secrets.
+The visitor statistics use the same login: whoever may read them can also open
+the log viewer. The optional inventory variable
 `logging_allowed_cidrs=["203.0.113.0/24"]` answers clients outside the list
 with `403` before any credential is examined.
 

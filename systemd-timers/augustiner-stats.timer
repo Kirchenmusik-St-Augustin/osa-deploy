@@ -1,0 +1,15 @@
+[Unit]
+Description=Update the visitor statistics of the static website every hour
+
+[Timer]
+# Five minutes past the hour: the first run after midnight closes the
+# previous day, and the jobs at the full hour on the host are done by then.
+# deploy.yml enables this timer only on a stage whose inventory sets
+# augustiner_stats_domain.
+OnCalendar=*:05
+Persistent=false
+# The report pulls in the filter (Requires=/After=), so both run in order.
+Unit=augustiner-stats-report.service
+
+[Install]
+WantedBy=timers.target

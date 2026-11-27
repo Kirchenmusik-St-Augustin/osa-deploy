@@ -1,0 +1,16 @@
+[Unit]
+Description=Fetch the DB-IP Lite lists for the visitor statistics once a month
+
+[Timer]
+# DB-IP publishes the lists of a month in its first days; the job falls back
+# to the previous month while the new one is missing. Persistent: a run
+# missed while the host was down is made up at the next boot.
+# deploy.yml enables this timer only on a stage whose inventory sets
+# augustiner_stats_domain.
+OnCalendar=*-*-03 04:30:00
+Persistent=true
+RandomizedDelaySec=1h
+Unit=augustiner-stats-geodata.service
+
+[Install]
+WantedBy=timers.target
