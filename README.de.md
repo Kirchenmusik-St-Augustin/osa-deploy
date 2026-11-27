@@ -341,7 +341,9 @@ ab, **startet zwischendurch neu** (nur wenn das Upgrade es verlangt), sperrt die
 ratenbegrenzt) und härtet SSH am Ende (nur Key-Login, kein Root-Login, drei
 Versuche, kein X11). Es schlägt fehl, wenn eine Datei unter
 `/etc/ssh/sshd_config.d/` diese Einstellungen überschreibt. Tägliche
-automatische Sicherheitsupdates werden eingeschaltet. Vor dem ersten Lauf
+automatische Sicherheitsupdates werden eingeschaltet. Das Journal behält
+höchstens 14 Tage, weil es die Access-Logs mit vollen Client-Adressen enthält
+(die Datenschutzerklärung der statischen Website nennt diese Grenze). Vor dem ersten Lauf
 einmal von Hand verbinden (`ssh service@<host>`) und den Host-Fingerprint
 über einen unabhängigen Kanal prüfen: Die Host-Key-Prüfung ist strikt. Nach
 einer Neuinstallation eines bestehenden Hosts zuerst den alten Eintrag

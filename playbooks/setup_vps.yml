@@ -276,6 +276,26 @@
         create: yes
       notify: restart journald
 
+    # The journal holds the access logs of every site with full client
+    # addresses, and the privacy statement of the static website promises
+    # that they are gone after 14 days. journald deletes whole archived files
+    # that hold entries older than MaxRetentionSec, never the file it is
+    # writing, and it checks when it starts a new file. One file per day
+    # bounds the oldest entry to MaxRetentionSec + 1 day in the current
+    # file + 1 day until the next check: 12 + 1 + 1 = 14 days.
+    - name: Keep the journal for at most 14 days
+      loop:
+        - { key: MaxRetentionSec, value: 12day }
+        - { key: MaxFileSec, value: 1day }
+      loop_control:
+        label: "{{ item.key }}"
+      ansible.builtin.lineinfile:
+        path: /etc/systemd/journald.conf
+        regexp: "^#?{{ item.key }}="
+        line: "{{ item.key }}={{ item.value }}"
+        create: yes
+      notify: restart journald
+
     # ------------------------------------------------------------------
     # 5. SSH key distribution
     # ------------------------------------------------------------------
