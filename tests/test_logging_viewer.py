@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from osa_tools.playbooks import REPOSITORY_ROOT
-from tests.ansible_helpers import OSA_DOMAINS, render_caddyfile, run_deploy_tasks
+from tests.ansible_helpers import OSA_DOMAINS, render_template, run_deploy_tasks
 
 CADDYFILE_TEMPLATE = REPOSITORY_ROOT / "config" / "caddy" / "Caddyfile.j2"
 DOZZLE_QUADLET = REPOSITORY_ROOT / "quadlets" / "logging" / "logging-dozzle.container"
@@ -34,7 +34,7 @@ def _site_block(rendered: str, domain: str) -> str:
 def test_only_the_log_viewer_block_reaches_dozzle(
     tmp_path: Path, domains: dict[str, str]
 ) -> None:
-    rendered = render_caddyfile(tmp_path, CADDYFILE_TEMPLATE, **domains)
+    rendered = render_template(tmp_path, CADDYFILE_TEMPLATE, **domains)
     block = _site_block(rendered, LOGGING_DOMAIN)
     assert rendered.count(DOZZLE_UPSTREAM) == 1
     assert DOZZLE_UPSTREAM in block
@@ -48,7 +48,7 @@ def test_only_the_log_viewer_block_reaches_dozzle(
 
 
 def test_listed_networks_are_refused_before_the_credentials(tmp_path: Path) -> None:
-    rendered = render_caddyfile(
+    rendered = render_template(
         tmp_path,
         CADDYFILE_TEMPLATE,
         logging_allowed_cidrs=["203.0.113.0/24", "2001:db8::/32"],

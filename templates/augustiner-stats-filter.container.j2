@@ -1,0 +1,51 @@
+[Unit]
+Description=Sort the visits of the static website into people and programs and render the statistics dashboard
+
+# Short-lived: augustiner-stats-report.service pulls this unit in and starts
+# only after it has finished (Requires=/After= there); augustiner-stats.timer
+# starts the report every hour. No [Install] section, so nothing starts it at
+# boot on its own. Rendered rather than copied: the names of the website come
+# from the inventory.
+[Container]
+ContainerName=augustiner-stats-filter
+# Pinned to a specific, verified digest like every other infrastructure
+# image; no AutoUpdate=. Only the standard library is used, so nothing is
+# installed into the container.
+Image=docker.io/library/python:3.14-alpine@sha256:76c65fc8c52c4d375e958298d9f66198b8fb6b06416c0e5500bf710c19cbaa77
+Entrypoint=python3
+WorkingDir=/opt/augustiner-stats
+{# Every name of the website counts as its own address: a visitor coming from
+   one of them was already on the site, not referred from elsewhere. #}
+{% set site_hosts = [augustiner_domain] + (augustiner_alias_domains | default([])) + (augustiner_redirects | default({}) | list) %}
+# -E and -s: no PYTHON* variables and no user site directory, only the package
+# mounted below.
+Exec=-E -s -m augustiner_stats run --logs /logs --data /data --www /data/www --site /site{% for host in site_hosts %} --host {{ host }}{% endfor +%}
+
+Environment=TZ=Europe/Vienna
+
+# Caddy writes the raw log, the website mirror the site: both read-only here.
+# The data directory holds the pseudonymous days and the dashboard; Caddy
+# serves its www/ subdirectory read-only.
+Volume=%h/data/augustiner-logs:/logs:ro,z
+Volume=%h/data/augustiner/site:/site:ro,z
+Volume=%h/data/augustiner-stats:/data:rw,z
+Volume=%h/.config/containers/systemd/augustiner-stats:/opt/augustiner-stats:ro,z
+
+# The raw log holds full addresses; nothing of it may leave the host.
+Network=none
+ReadOnly=true
+NoNewPrivileges=true
+DropCapability=all
+Mount=type=tmpfs,target=/tmp,tmpfs-mode=1777,noexec
+
+# A run over the real logs of the development host took 3s and peaked at
+# 56MB; 256m leaves room for a busy week of raw logs. Quadlet 5.4.2 has no
+# native memory key.
+PodmanArgs=--memory=256m
+PidsLimit=64
+
+[Service]
+Type=oneshot
+# The first run reads up to seven days of raw logs; later runs only the
+# current day.
+TimeoutStartSec=15min

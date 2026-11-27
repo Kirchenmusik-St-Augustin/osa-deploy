@@ -68,6 +68,8 @@ Services übersetzt.
      └─ go.hochamt.at (Kurz-URLs) → 127.0.0.1:21000 (mit Präfix /go)
      └─ logging_domain (Log-Viewer) → 127.0.0.1:8081 → Dozzle (Basic Auth)
      └─ augustiner_domain (optional) → Dateien aus ~/data/augustiner/site (nur lesend)
+     └─ augustiner_stats_domain (optional) → Dateien aus ~/data/augustiner-stats/www
+                                             (nur lesend, Login des Log-Viewers)
   ```
 - Die Anwendungs-Container nutzen `Image=…:latest` und `AutoUpdate=registry`:
   Podmans eigener `podman-auto-update.timer` zieht und startet sie täglich neu,
@@ -89,6 +91,22 @@ Services übersetzt.
   nur lesend aus, und nur die Dateien, die das eigene Live-Paket des
   Repositorys enthält. Ein Commit mit symbolischem Link wird abgewiesen, und
   unter 2 GB freiem Plattenplatz startet kein Lauf.
+- Optional, zusammen mit der statischen Website: ihre Besucherstatistik
+  (`quadlets/augustiner-stats/`). Neben dem üblichen Access-Log schreibt jeder
+  Name der Website seine Zugriffe nach `~/data/augustiner-logs/access.log`,
+  und Caddy löscht diese Dateien nach 7 Tagen. Kurz nach jeder vollen Stunde
+  startet `augustiner-stats.timer` zwei kurzlebige Container ohne
+  Netzwerkzugang: `augustiner-stats-filter` (nur Python-Standardbibliothek)
+  trennt Menschen von automatischen Zugriffen (Scanner, Suchmaschinen,
+  KI-Crawler, Link-Vorschauen, Werkzeuge, Clients ohne JavaScript,
+  Rechenzentren), ersetzt die Adressen durch Pseudonyme mit einem
+  Monatsgeheimnis, das nach Monatsende gelöscht wird, und zeichnet das
+  Dashboard; `augustiner-stats-report` (GoAccess) ergänzt zwei
+  Detailberichte. Die Tage der Menschen bleiben 25 Monate erhalten, die der
+  automatischen Zugriffe 90 Tage. Einmal im Monat holt
+  `augustiner-stats-geodata.timer` die Länder- und Netzlisten von DB-IP Lite,
+  als einziger Statistik-Job mit Netzwerkzugang. Caddy liefert die Seiten aus
+  `~/data/augustiner-stats/www` hinter dem Login des Log-Viewers aus.
 
 ### 2.3 Container-Härtung
 
@@ -141,6 +159,12 @@ immer wieder, was das Log füllt.
 `augustiner_domain` entfernen und deployen nimmt die Website und ihren Timer
 wieder weg.
 
+Optional, für die Besucherstatistik der statischen Website:
+`augustiner_stats_domain` (ein eigener Hostname, braucht `augustiner_domain`;
+sein DNS-Eintrag muss vor dem Deploy auf den Host zeigen). Entfernen und
+deployen stoppt die Timer der Statistik; die bis dahin gesammelten Daten
+bleiben in `~/data/augustiner-stats`.
+
 Heute wird nur `production` ausgerollt. `test` und `qa` entstehen auf dem
 gleichen Weg, sobald ein Server dafür existiert (Abschnitt 4.5).
 
@@ -164,7 +188,11 @@ dazu `augustiner-pull.timer`, wo die statische Website eingeschaltet ist.
 Dessen letzte Läufe (`cloned`, `updated`, `unchanged` oder der Grund einer
 Ablehnung) zeigt `journalctl --user -u augustiner-pull -n 20`;
 `systemctl --user start augustiner-pull.service` holt neue Commits sofort,
-statt auf den Timer zu warten.
+statt auf den Timer zu warten. Wo die Besucherstatistik eingeschaltet ist,
+kommen `augustiner-stats.timer` und `augustiner-stats-geodata.timer` dazu;
+`journalctl --user -u augustiner-stats-filter -u augustiner-stats-report -n 20`
+zeigt die letzten Läufe, und `systemctl --user start augustiner-stats-report.service`
+aktualisiert die Statistik sofort (der Filter läuft vorher).
 
 ### 3.2 Neu starten
 
@@ -552,7 +580,7 @@ zuerst entschlüsselt. Später bearbeiten mit
 
 | Datei | Inhalt |
 |---|---|
-| `caddy.env` | `LOGGING_USER`, `LOGGING_PASSWORD_HASH` (bcrypt) des Log-Viewers |
+| `caddy.env` | `LOGGING_USER`, `LOGGING_PASSWORD_HASH` (bcrypt) des Log-Viewers und der Besucherstatistik |
 | `osa-backend.env.j2` | Umgebung von Web und Worker: Datenbank-URL, Valkey-Passwort, `SECRET_KEY`, Mail, Zeitplan |
 | `osa-backend-worker.env` | nur der Worker: Koofr-Zugangsdaten und Backup-Ziel |
 | `osa-backend-pg.env` | Bootstrap-Rolle von PostgreSQL |
@@ -570,6 +598,8 @@ hash-password --algorithm bcrypt --bcrypt-cost 12`. Jeder Fehlversuch kostet
 Caddy einen bcrypt-Vergleich; Cost 12 hält das auf einem kleinen Host bei
 Bruchteilen einer Sekunde. Der Log-Viewer hält den Podman-API-Socket, sein
 Login ist also so sensibel wie die Secrets der Stage.
+Die Besucherstatistik nutzt dasselbe Login: Wer sie lesen darf, kann auch den
+Log-Viewer öffnen.
 Die optionale Inventar-Variable `logging_allowed_cidrs=["203.0.113.0/24"]`
 beantwortet Clients außerhalb der Liste mit `403`, bevor ein Zugangsdatum
 geprüft wird.

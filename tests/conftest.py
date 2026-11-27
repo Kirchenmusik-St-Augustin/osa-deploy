@@ -1,11 +1,17 @@
 """Shared helpers for the wrapper tests."""
 
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from osa_tools.site import Site
+
+# deploy.yml copies quadlets/augustiner-stats/ to the host as it is, so the
+# tests must not leave compiled files of the statistics package in it: they
+# would be copied along and report a change on every deploy.
+sys.dont_write_bytecode = True
 
 PASSWORD = "correct-horse-battery-staple-1"
 

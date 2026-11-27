@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 from osa_tools.playbooks import PLAYBOOK_DIR, REPOSITORY_ROOT
-from tests.ansible_helpers import render_caddyfile, run_deploy_tasks
+from tests.ansible_helpers import render_template, run_deploy_tasks
 
 PULL_SCRIPT = REPOSITORY_ROOT / "quadlets" / "augustiner" / "pull.sh"
 PULL_QUADLET = REPOSITORY_ROOT / "quadlets" / "augustiner" / "augustiner-pull.container"
@@ -402,8 +402,8 @@ def test_without_the_site_the_caddyfile_stays_as_before(tmp_path: Path) -> None:
     assert text.count(SITE_MARKER) == 1
     application_only = tmp_path / "application-only.j2"
     application_only.write_text(text.split(SITE_MARKER)[0], encoding="utf-8")
-    rendered = render_caddyfile(tmp_path, CADDYFILE_TEMPLATE)
-    assert rendered == render_caddyfile(tmp_path, application_only)
+    rendered = render_template(tmp_path, CADDYFILE_TEMPLATE)
+    assert rendered == render_template(tmp_path, application_only)
     assert "augustiner" not in rendered
 
 
@@ -414,7 +414,7 @@ def _site_block(rendered: str, domain: str) -> str:
 
 
 def test_the_site_block_serves_only_the_live_package(tmp_path: Path) -> None:
-    rendered = render_caddyfile(
+    rendered = render_template(
         tmp_path, CADDYFILE_TEMPLATE, augustiner_domain="www.church-tests.org"
     )
     block = _site_block(rendered, "www.church-tests.org")
@@ -433,7 +433,7 @@ def test_the_site_block_serves_only_the_live_package(tmp_path: Path) -> None:
 
 
 def test_the_final_domain_drops_noindex(tmp_path: Path) -> None:
-    rendered = render_caddyfile(
+    rendered = render_template(
         tmp_path,
         CADDYFILE_TEMPLATE,
         augustiner_domain="www.church-tests.org",
@@ -443,7 +443,7 @@ def test_the_final_domain_drops_noindex(tmp_path: Path) -> None:
 
 
 def test_all_aliases_share_one_redirect_block(tmp_path: Path) -> None:
-    rendered = render_caddyfile(
+    rendered = render_template(
         tmp_path,
         CADDYFILE_TEMPLATE,
         augustiner_domain="www.church-tests.org",
@@ -461,7 +461,7 @@ def test_all_aliases_share_one_redirect_block(tmp_path: Path) -> None:
 
 
 def test_each_redirect_target_gets_one_temporary_block(tmp_path: Path) -> None:
-    rendered = render_caddyfile(
+    rendered = render_template(
         tmp_path,
         CADDYFILE_TEMPLATE,
         augustiner_domain="church-tests.org",
@@ -495,8 +495,8 @@ def test_without_redirects_the_site_renders_as_before(tmp_path: Path) -> None:
         "augustiner_domain": "church-tests.org",
         "augustiner_alias_domains": ["www.church-tests.org"],
     }
-    before = render_caddyfile(tmp_path, CADDYFILE_TEMPLATE, **site)
-    assert before == render_caddyfile(
+    before = render_template(tmp_path, CADDYFILE_TEMPLATE, **site)
+    assert before == render_template(
         tmp_path, CADDYFILE_TEMPLATE, **site, augustiner_redirects={}
     )
     assert "redir https://church-tests.org/" not in before

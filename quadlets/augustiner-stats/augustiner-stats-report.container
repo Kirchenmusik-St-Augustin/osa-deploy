@@ -1,0 +1,47 @@
+[Unit]
+Description=Render the detail reports of the visitor statistics with GoAccess
+# The filter writes everything this report reads; a failed filter run leaves
+# the reports of the previous hour in place.
+Requires=augustiner-stats-filter.service
+After=augustiner-stats-filter.service
+
+# Short-lived: started by augustiner-stats.timer (systemd-timers/), runs
+# report.sh once and exits. No [Install] section, so nothing starts it at boot
+# on its own; deploy.yml enables the timer only on a stage whose inventory
+# sets augustiner_stats_domain.
+[Container]
+ContainerName=augustiner-stats-report
+# Pinned to a specific, verified digest like every other infrastructure
+# image; no AutoUpdate=. Bumping GoAccess is a deliberate, manual edit here.
+Image=docker.io/allinurl/goaccess:1.12@sha256:ce8fc587382dc85f4757262156928c4c76edcbf780c58603291e3a6080b4fcdc
+Entrypoint=/bin/sh
+Exec=/opt/augustiner-stats/report.sh
+
+Environment=STATS_DATA=/data
+Environment=STATS_ASSETS=/opt/augustiner-stats
+# GoAccess ships its German translation; with these it writes the whole
+# report in German, country names included.
+Environment=LANG=de_DE.UTF-8
+Environment=LC_ALL=de_DE.UTF-8
+Environment=LANGUAGE=de
+Environment=TZ=Europe/Vienna
+
+Volume=%h/data/augustiner-stats:/data:rw,z
+Volume=%h/.config/containers/systemd/augustiner-stats:/opt/augustiner-stats:ro,z
+
+Network=none
+ReadOnly=true
+NoNewPrivileges=true
+DropCapability=all
+Mount=type=tmpfs,target=/tmp,tmpfs-mode=1777,noexec
+
+# Adding a busy day of 1.6 million lines to a database of 25 months peaked
+# at 252MB in a load test; the hourly report takes about a second. Quadlet
+# 5.4.2 has no native memory key.
+PodmanArgs=--memory=384m
+PidsLimit=64
+
+[Service]
+Type=oneshot
+# The first run after a longer pause may add several closed days at once.
+TimeoutStartSec=15min

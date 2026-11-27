@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 [tool.ruff]
 line-length = 88
 target-version = "py312"
+src = [".", "quadlets/augustiner-stats"]
 
 [tool.ruff.lint]
 select = [
@@ -23,15 +24,21 @@ max-complexity = 8
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S603", "S607", "ANN401", "SLF001", "PLR0913", "FBT"]
+# German report texts: the en dash and the narrow no-break space before % and
+# units are deliberate typography, not look-alikes of ASCII characters.
+"quadlets/augustiner-stats/**" = ["RUF001"]
+"tests/test_stats_*.py" = ["RUF001"]
 
 [tool.pyright]
-include = ["osa_tools", "tests"]
+include = ["osa_tools", "tests", "quadlets/augustiner-stats"]
+extraPaths = ["quadlets/augustiner-stats"]
 typeCheckingMode = "strict"
 pythonVersion = "3.12"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=osa_tools --cov-branch --cov-report=term-missing --cov-fail-under=95"
+pythonpath = ["quadlets/augustiner-stats"]
+addopts = "--cov=osa_tools --cov=augustiner_stats --cov-branch --cov-report=term-missing --cov-fail-under=95"
 
 [tool.coverage.run]
 branch = true
