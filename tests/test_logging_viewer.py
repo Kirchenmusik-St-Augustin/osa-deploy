@@ -1,5 +1,6 @@
 """The log viewer (Dozzle): its own Caddy site block and its domain check."""
 
+import re
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,39 @@ def test_listed_networks_are_refused_before_the_credentials(tmp_path: Path) -> N
 
 def test_dozzle_serves_from_the_root_of_its_domain() -> None:
     assert "DOZZLE_BASE" not in DOZZLE_QUADLET.read_text(encoding="utf-8")
+
+
+def _dozzle_environment() -> dict[str, str]:
+    lines = DOZZLE_QUADLET.read_text(encoding="utf-8").splitlines()
+    settings = [
+        line.removeprefix("Environment=").partition("=")
+        for line in lines
+        if line.startswith("Environment=")
+    ]
+    return {key: value for key, _, value in settings}
+
+
+def test_dozzle_stays_a_pure_log_viewer() -> None:
+    """No setup wizard, no container actions, no shell, no update checks."""
+    environment = _dozzle_environment()
+    assert environment["DOZZLE_DISABLE_SETUP_WIZARD"] == "true"
+    assert environment["DOZZLE_ENABLE_ACTIONS"] == "false"
+    assert environment["DOZZLE_ENABLE_SHELL"] == "false"
+    assert environment["DOZZLE_RELEASE_CHECK_MODE"] == "manual"
+    assert environment["DOZZLE_IMAGE_CHECK_MODE"] == "off"
+    assert environment["DOZZLE_NO_ANALYTICS"] == "true"
+    assert not any(key.startswith("DOZZLE_AUTH") for key in environment)
+
+
+def test_dozzle_is_pinned_to_a_version_that_knows_the_wizard_switch() -> None:
+    """--disable-setup-wizard exists from Dozzle 11.2 on."""
+    text = DOZZLE_QUADLET.read_text(encoding="utf-8")
+    (image,) = [line for line in text.splitlines() if line.startswith("Image=")]
+    match = re.fullmatch(
+        r"Image=docker\.io/amir20/dozzle:v(\d+)\.(\d+)\.\d+@sha256:[0-9a-f]{64}", image
+    )
+    assert match, image
+    assert (int(match.group(1)), int(match.group(2))) >= (11, 2)
 
 
 def test_a_log_viewer_name_of_its_own_passes(tmp_path: Path) -> None:

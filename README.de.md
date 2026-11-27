@@ -77,7 +77,9 @@ Services übersetzt.
   (das Paket liefert ihn ausgeschaltet). `./osa deploy` braucht man, um
   Konfiguration zu verteilen, für ein sofortiges Deploy und um einen Release zu
   pinnen.
-- Dozzle ist ein schreibgeschützter Log-Viewer hinter Basic Auth. Der
+- Dozzle ist ein schreibgeschützter Log-Viewer hinter Basic Auth; sein
+  Einrichtungsassistent, Container-Aktionen, Shell und Update-Prüfungen sind
+  abgeschaltet. Der
   wöchentliche `podman-prune.timer` führt `podman system prune -a -f` auf dem
   Host aus.
 - Optional: die statische Website der Augustinerkirche, ein privates

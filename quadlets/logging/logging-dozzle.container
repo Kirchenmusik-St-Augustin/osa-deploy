@@ -13,7 +13,7 @@ ContainerName=logging-dozzle
 # Podman-socket access to every other rootless container this user runs
 # (see the Volume= line below). Bumping Dozzle is now a deliberate,
 # manual edit.
-Image=docker.io/amir20/dozzle:v11.1.0@sha256:12ce38fbb957f507a39e2d7bb1dc7550f0b0851b030779580404904d2cfe19f3
+Image=docker.io/amir20/dozzle:v11.4.3@sha256:b3678f02393afa2778f03ee8293909485a59882a8194a5351192f66a9b337035
 
 # Read-only only protects the socket file itself. Every API call is still
 # possible through it, including creating privileged containers. The viewer is
@@ -29,6 +29,18 @@ SecurityLabelDisable=true
 
 PublishPort=127.0.0.1:8081:8080
 Environment=DOZZLE_NO_ANALYTICS=true
+# A pure log viewer. Without a writable /data every start counts as a fresh
+# install, and Dozzle 11 would open its setup wizard each time (own login,
+# data volume, container actions and shell, Dozzle Cloud, auto-update). The
+# wizard needs Dozzle 11.2 or later. Actions and shell are off by default;
+# they are set explicitly so a changed default upstream cannot switch them on.
+# The image is pinned, so Dozzle neither looks for new releases of itself nor
+# checks the registries for newer images of the other containers.
+Environment=DOZZLE_DISABLE_SETUP_WIZARD=true
+Environment=DOZZLE_ENABLE_ACTIONS=false
+Environment=DOZZLE_ENABLE_SHELL=false
+Environment=DOZZLE_RELEASE_CHECK_MODE=manual
+Environment=DOZZLE_IMAGE_CHECK_MODE=off
 Environment=TZ=Europe/Vienna
 
 ReadOnly=true

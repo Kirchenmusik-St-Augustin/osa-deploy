@@ -74,7 +74,8 @@ runs containers. Containers are described as systemd Quadlets
   without Ansible; the first `./osa deploy` of a stage enables that timer (the
   package ships it switched off). `./osa deploy` is needed to distribute
   configuration, for an immediate deploy and to pin a release.
-- Dozzle is a read-only log viewer behind basic auth. The weekly
+- Dozzle is a read-only log viewer behind basic auth; its setup wizard,
+  container actions, shell and update checks are switched off. The weekly
   `podman-prune.timer` runs `podman system prune -a -f` on the host.
 - Optional: the static website of the Augustinian church, a private
   third-party repository, read over SSH with a deploy key that has no write
