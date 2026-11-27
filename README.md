@@ -323,7 +323,9 @@ keys from `operator_keys.pub` for both, tunes rootless Podman, **reboots
 partway through** (only when the upgrade requires it), locks the firewall down to SSH/80/443 (SSH rate-limited)
 and hardens SSH at the end (key-only login, no root login, three attempts,
 no X11). It fails if a file below `/etc/ssh/sshd_config.d/` overrides these
-settings. Daily unattended security updates are switched on. Connect once by
+settings. Daily unattended security updates are switched on. The journal
+keeps at most 14 days, since it holds the access logs with full client
+addresses (the privacy statement of the static website names that limit). Connect once by
 hand (`ssh service@<host>`) and verify the host fingerprint over an
 independent channel before the first run: host key checking is strict. After
 a reinstall of an existing host remove the old entry first (`ssh-keygen -R
