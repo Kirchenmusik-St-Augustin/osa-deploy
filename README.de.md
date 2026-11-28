@@ -77,7 +77,9 @@ Services übersetzt.
   (das Paket liefert ihn ausgeschaltet). `./osa deploy` braucht man, um
   Konfiguration zu verteilen, für ein sofortiges Deploy und um einen Release zu
   pinnen.
-- Dozzle ist ein schreibgeschützter Log-Viewer hinter Basic Auth. Der
+- Dozzle ist ein schreibgeschützter Log-Viewer hinter Basic Auth; sein
+  Einrichtungsassistent, Container-Aktionen, Shell und Update-Prüfungen sind
+  abgeschaltet. Der
   wöchentliche `podman-prune.timer` führt `podman system prune -a -f` auf dem
   Host aus.
 - Optional: die statische Website der Augustinerkirche, ein privates
@@ -151,7 +153,7 @@ Optional, für die statische Website: `augustiner_domain` (ihre Hauptdomain),
 auf die Hauptdomain umleiten, der Pfad bleibt erhalten), `augustiner_redirects`
 (eine JSON-Zuordnung weiterer Namen zu einer Seite der Website, wahlweise mit
 `#Anker`, zum Beispiel `{"example.net": "/pages/a.html#part"}`; jeder Name
-leitet vorübergehend (302) auf diese feste Adresse der Hauptdomain um) und `augustiner_noindex` (Standard
+leitet dauerhaft (301) auf diese feste Adresse der Hauptdomain um; Browser merken sich das nur einen Tag) und `augustiner_noindex` (Standard
 `true`, sendet `X-Robots-Tag: noindex`, solange eine Übergangs-Domain läuft).
 Einen Alias oder eine Weiterleitung erst eintragen, wenn der DNS-Eintrag auf
 den Host zeigt: Sonst bekommt Caddy kein Zertifikat dafür und versucht es
