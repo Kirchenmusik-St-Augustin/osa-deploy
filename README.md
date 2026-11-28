@@ -143,7 +143,7 @@ Optional, for the static website: `augustiner_domain` (its main domain),
 permanently to the main domain, path kept), `augustiner_redirects` (a JSON
 mapping of further names to one page of the site, optionally with an
 `#anchor`, for example `{"example.net": "/pages/a.html#part"}`; each name
-redirects temporarily (302) to that fixed address on the main domain) and `augustiner_noindex` (default
+redirects permanently (301) to that fixed address on the main domain; browsers keep it for one day only) and `augustiner_noindex` (default
 `true`, sends `X-Robots-Tag: noindex` while an interim domain is in use). Add
 an alias or a redirect only once its DNS record points at the host: otherwise
 Caddy gets no certificate for it and keeps retrying, which fills the log. Removing

@@ -432,6 +432,36 @@ def test_the_site_block_serves_only_the_live_package(tmp_path: Path) -> None:
     assert "redir https://www.church-tests.org" not in rendered
 
 
+def test_a_missing_file_answers_404_with_the_site_headers(tmp_path: Path) -> None:
+    rendered = render_template(
+        tmp_path, CADDYFILE_TEMPLATE, augustiner_domain="www.church-tests.org"
+    )
+    block = _site_block(rendered, "www.church-tests.org")
+    errors = block[block.index("\thandle_errors {\n") :]
+    assert "\t\timport augustiner_headers\n" in errors
+    # The real status, never a soft 404 with a page of the site.
+    assert '\t\trespond "{err.status_code} {err.status_text}"\n' in errors
+    assert "file_server" not in errors
+    assert "redir" not in errors
+
+
+def test_data_tables_stay_out_of_search_results(tmp_path: Path) -> None:
+    rendered = render_template(
+        tmp_path,
+        CADDYFILE_TEMPLATE,
+        augustiner_domain="www.church-tests.org",
+        augustiner_noindex=False,
+    )
+    block = _site_block(rendered, "www.church-tests.org")
+    assert '\theader @data X-Robots-Tag "noindex"\n' in block
+    # Only the data tables; pages, media and documents stay indexable.
+    assert block.count("X-Robots-Tag") == 1
+    data = block[block.index("\t@data {\n") :]
+    assert data.startswith(
+        "\t@data {\n\t\tpath /data/*\n\t\tnot path_regexp (?i)\\.(?:webp|png"
+    )
+
+
 def test_the_final_domain_drops_noindex(tmp_path: Path) -> None:
     rendered = render_template(
         tmp_path,
@@ -439,7 +469,7 @@ def test_the_final_domain_drops_noindex(tmp_path: Path) -> None:
         augustiner_domain="www.church-tests.org",
         augustiner_noindex=False,
     )
-    assert "X-Robots-Tag" not in rendered
+    assert "noindex, nofollow, noarchive" not in rendered
 
 
 def test_all_aliases_share_one_redirect_block(tmp_path: Path) -> None:
@@ -460,7 +490,7 @@ def test_all_aliases_share_one_redirect_block(tmp_path: Path) -> None:
     assert rendered.count("redir https://www.church-tests.org{uri}") == 1
 
 
-def test_each_redirect_target_gets_one_temporary_block(tmp_path: Path) -> None:
+def test_each_redirect_target_gets_one_permanent_block(tmp_path: Path) -> None:
     rendered = render_template(
         tmp_path,
         CADDYFILE_TEMPLATE,
@@ -474,15 +504,17 @@ def test_each_redirect_target_gets_one_temporary_block(tmp_path: Path) -> None:
         },
     )
     page = _site_block(rendered, "church-tests.at, www.church-tests.at")
-    assert "\tredir https://church-tests.org/pages/a.html 302\n" in page + "\n"
+    assert "\tredir https://church-tests.org/pages/a.html 301\n" in page + "\n"
     home = _site_block(rendered, "church-tests.net, www.church-tests.net")
-    assert "\tredir https://church-tests.org/ 302\n" in home + "\n"
+    assert "\tredir https://church-tests.org/ 301\n" in home + "\n"
     # The anchor stays part of the target, so this name gets its own block.
     anchor = _site_block(rendered, "church-tests.eu")
-    assert "\tredir https://church-tests.org/pages/a.html#p-x 302\n" in anchor + "\n"
+    assert "\tredir https://church-tests.org/pages/a.html#p-x 301\n" in anchor + "\n"
     for block in (page, home, anchor):
         assert "import access_log" in block
         assert "header -Server" in block
+        # Browsers keep the permanent redirect for one day only.
+        assert 'header Cache-Control "max-age=86400"' in block
         assert "{uri}" not in block
         assert "file_server" not in block
     # Three targets, three blocks; the main domain itself is no redirect.

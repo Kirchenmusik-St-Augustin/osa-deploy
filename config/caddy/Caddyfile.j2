@@ -235,7 +235,9 @@ http://127.0.0.1:2020 {
 
 	# Every response is revalidated by ETag (304 when unchanged), so a
 	# replaced file shows up at once. Media may sit in shared caches, the
-	# data tables only in the browser.
+	# data tables only in the browser. The data tables are what the pages
+	# load by script, not pages of their own, so they stay out of search
+	# results; the pages that show them are indexed.
 	@media path_regexp (?i)\.(?:webp|png|jpe?g|gif|svg|ico|mp3|m4a|ogg|mp4|webm)$
 	@data {
 		path /data/*
@@ -243,6 +245,7 @@ http://127.0.0.1:2020 {
 	}
 	header @media Cache-Control "public, no-cache"
 	header @data Cache-Control "private, no-cache"
+	header @data X-Robots-Tag "noindex"
 	header ?Cache-Control "no-cache"
 
 	@csv path *.csv
@@ -275,6 +278,14 @@ http://127.0.0.1:2020 {
 
 		file_server
 	}
+
+	# A missing file is an error of file_server, and Caddy drops the deferred
+	# header block on that path (the `-Server` deletion defers it). The
+	# answer keeps its real status, so search engines see a plain 404.
+	handle_errors {
+		import augustiner_headers
+		respond "{err.status_code} {err.status_text}"
+	}
 }
 {% if augustiner_alias_domains | default([]) %}
 
@@ -291,8 +302,10 @@ http://127.0.0.1:2020 {
 {% endif %}
 {% if augustiner_redirects | default({}) %}
 
-# Names of their own that lead to one page of the website: temporary
-# redirect to that fixed address, one block per target page.
+# Names of their own that lead to one page of the website: permanent
+# redirect to that fixed address, one block per target page. Search engines
+# move the old entries over to the target; browsers keep the redirect for one
+# day only, so a later change of the target reaches every visitor soon.
 {% for target, names in augustiner_redirects | dict2items | groupby('value') %}
 {% if not loop.first %}
 
@@ -303,7 +316,8 @@ http://127.0.0.1:2020 {
 	import augustiner_log
 {% endif %}
 	header -Server
-	redir https://{{ augustiner_domain }}{{ target }} 302
+	header Cache-Control "max-age=86400"
+	redir https://{{ augustiner_domain }}{{ target }} 301
 }
 {% endfor %}
 {% endif %}
